@@ -7,17 +7,17 @@ namespace Sample
 {
     class Program
     {
-        private const ulong DEVICE_ID = 1;
-        private const string DEVICE_HOST = "10.0.0.1";
+        private const ulong DEVICE_ID = 3;
+        private const string DEVICE_HOST = "192.168.100.101";
         static async Task Main(string[] args)
         {
             var manager = new AnvizManager();
-#if true //authenticate with device password
+#if false //authenticate with device password
             manager.ConnectionUser = "admin";
             manager.ConnectionPassword = "12345";
             manager.AuthenticateConnection = true;
 #endif
-#if true //false for client mode
+#if false //false for client mode
             manager.Listen();
             Console.WriteLine($"Listening on port 5010");
             using (var device = await manager.Accept())
@@ -27,8 +27,9 @@ namespace Sample
             {
                 device.DevicePing += (s, e) => Console.WriteLine("Device Ping Received");
                 device.ReceivedPacket += (s, e) => Console.WriteLine("Received packet");
-                device.ReceivedRecord += (s, e) => Console.WriteLine($"Received record {e.DateTime.ToShortTimeString()}");
+                device.ReceivedRecord += (s, e) => Console.WriteLine($"Received record {e.UserCode} : {e.DateTime.ToShortTimeString()}");
                 device.DeviceError += (s, e) => throw e;
+
                 var id = device.DeviceId;
                 var sn = await device.GetDeviceSN();
                 var type = await device.GetDeviceTypeCode();
@@ -56,7 +57,7 @@ namespace Sample
                 Console.WriteLine($"FW {basic.Firmware} AdminPWD {basic.ManagementPassword} Vol {basic.Volume} DateFormat {basic.DateFormat} 24h {basic.Is24HourClock}");
 #if false //here you can change basic parameters
                 basic.Volume = Anviz.SDK.Responses.Volume.Off;
-                basic.DateFormat = Anviz.SDK.Responses.DateFormat.DDMMYY;
+                basic.DateFormat = Anviz.SDK.Responses.DateFormat.YYMMDD;
                 basic.Is24HourClock = true;
                 await device.SetBasicSettings(basic);
 #endif

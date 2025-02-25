@@ -1,4 +1,5 @@
 ﻿using Anviz.SDK.Commands;
+using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
 using System;
 using System.Net.Sockets;
@@ -79,7 +80,7 @@ namespace Anviz.SDK
         {
             if (!DeviceSocket.Connected)
             {
-                throw new Exception("Device is not connected.");
+                throw new DeviceConnectionLostException();
             }
             ResponseCode = cmd.ResponseCode;
             await cmd.Send(DeviceStream);
@@ -90,12 +91,12 @@ namespace Anviz.SDK
                 {
                     DeviceSocket.Close();
                 }
-                throw new Exception("Device timeout waiting response.");
+                throw new DeviceConnectionLostException("Device timeout waiting response.");
             }
             var result = await taskEmitter.Task;
             if (result == null)
             {
-                throw new Exception("Device connection lost.");
+                throw new DeviceConnectionLostException();
             }
             return result;
         }
