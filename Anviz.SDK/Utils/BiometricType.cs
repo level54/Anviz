@@ -16,6 +16,8 @@
             {
                 case "FACE7": //FACEPASS7
                     return BiometricType.Face;
+                case var _ when code.StartsWith("M5"): // All the M5 variants
+                    return BiometricType.Finger;
                 case "VF30PRO": //VF30 (PRO)
                 case "W1": //W1 (PRO)
                 case "TC-B-N": //TC550

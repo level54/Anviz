@@ -7,7 +7,10 @@ namespace Anviz.SDK
 {
     public partial class AnvizDevice : IDisposable
     {
+        internal static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+
         public ulong DeviceId { get; private set; } = 0;
+        public string DeviceType { get; private set; } = string.Empty;
         public BiometricType DeviceBiometricType { get; private set; } = BiometricType.Unknown;
         private readonly AnvizStream DeviceStream;
 

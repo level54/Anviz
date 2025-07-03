@@ -6,7 +6,10 @@ namespace Anviz.SDK.Responses
 {
     public class UserInfo
     {
-        internal const int RECORD_LENGTH = 40;
+        internal static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+
+        internal const int RECORD_LENGTH30 = 30;
+        internal const int RECORD_LENGTH40 = 40;
         internal const int MAX_RECORDS = 8;
 
         public ulong Id { get; set; }
@@ -21,40 +24,66 @@ namespace Anviz.SDK.Responses
         public byte Keep { get; set; }
         public byte Message { get; set; }
 
-        internal UserInfo(byte[] data, int offset)
+        internal UserInfo(byte[] data, int offset, int datalen = RECORD_LENGTH40)
         {
-            Id = Bytes.Read(Bytes.Split(data, offset, 5));
-            var pwd = Bytes.Split(data, offset + 5, 3);
-            if (pwd[0] == 0xFF && pwd[1] == 0xFF && pwd[2] == 0xFF)
+            log.Debug($"UserInfo: data.Length = {data.Length}, offset = {offset}, datalen = {datalen}");
+
+            try
             {
-                Password = null;
+                Id = Bytes.Read(Bytes.Split(data, offset, 5));
+                var pwd = Bytes.Split(data, offset + 5, 3);
+                if (pwd[0] == 0xFF && pwd[1] == 0xFF && pwd[2] == 0xFF)
+                {
+                    Password = null;
+                }
+                else
+                {
+                    Password = Bytes.PasswordRead(pwd);
+                }
+                var card = Bytes.Split(data, offset + 8, 4);
+                if (card[0] == 0xFF && card[1] == 0xFF && card[2] == 0xFF && card[3] == 0xFF)
+                {
+                    Card = null;
+                }
+                else
+                {
+                    Card = Bytes.Read(card);
+                }
+                if (datalen == RECORD_LENGTH30)
+                {
+                    Name = Bytes.GetAsciiString(Bytes.Split(data, offset + 12, 10));
+                    Department = data[offset + 22];
+                    Group = data[offset + 23];
+                    Mode = data[offset + 24];
+                    EnrolledFingerprints = Fingers.DecodeFingers(Bytes.Read(Bytes.Split(data, offset + 25, 2)));
+                    PWDH8 = data[offset + 27];
+                    Keep = data[offset + 28];
+                    Message = data[offset + 29];
+                }
+                else
+                if (datalen == RECORD_LENGTH40)
+                {
+                    Name = Bytes.GetUnicodeString(Bytes.Split(data, offset + 12, 20));
+                    Department = data[offset + 32];
+                    Group = data[offset + 33];
+                    Mode = data[offset + 34];
+                    EnrolledFingerprints = Fingers.DecodeFingers(Bytes.Read(Bytes.Split(data, offset + 35, 2)));
+                    PWDH8 = data[offset + 37];
+                    Keep = data[offset + 38];
+                    Message = data[offset + 39];
+                }
             }
-            else
+            catch (System.Exception ex)
             {
-                Password = Bytes.PasswordRead(pwd);
+                log.Error("Error parsing UserInfo from data.", ex);
+                throw;
             }
-            var card = Bytes.Split(data, offset + 8, 4);
-            if (card[0] == 0xFF && card[1] == 0xFF && card[2] == 0xFF && card[3] == 0xFF)
-            {
-                Card = null;
-            }
-            else
-            {
-                Card = Bytes.Read(card);
-            }
-            Name = Bytes.GetUnicodeString(Bytes.Split(data, offset + 12, 20));
-            Department = data[offset + 32];
-            Group = data[offset + 33];
-            Mode = data[offset + 34];
-            EnrolledFingerprints = Fingers.DecodeFingers(Bytes.Read(Bytes.Split(data, offset + 35, 2)));
-            PWDH8 = data[offset + 37];
-            Keep = data[offset + 38];
-            Message = data[offset + 39];
+
         }
 
-        internal byte[] ToArray()
+        internal byte[] ToArray(int datalen = RECORD_LENGTH40)
         {
-            var ret = new byte[RECORD_LENGTH];
+            var ret = new byte[datalen];
             Bytes.Write(5, Id).CopyTo(ret, 0);
             Bytes.PasswordWrite(Password).CopyTo(ret, 5);
             if (Card.HasValue)
@@ -68,13 +97,26 @@ namespace Anviz.SDK.Responses
                 ret[10] = 0xFF;
                 ret[11] = 0xFF;
             }
-            Encoding.BigEndianUnicode.GetBytes(Name).CopyTo(ret, 12);
-            ret[32] = Department;
-            ret[33] = Group;
-            ret[34] = Mode;
-            ret[37] = PWDH8;
-            ret[38] = Keep;
-            ret[39] = Message;
+            if (datalen == RECORD_LENGTH30)
+            {
+                Encoding.ASCII.GetBytes(Name).CopyTo(ret, 12);
+                ret[22] = Department;
+                ret[23] = Group;
+                ret[24] = Mode;
+                ret[27] = PWDH8;
+                ret[28] = Keep;
+                ret[29] = Message;
+            }
+            else if (datalen == RECORD_LENGTH40)
+            { 
+                Encoding.BigEndianUnicode.GetBytes(Name).CopyTo(ret, 12);
+                ret[32] = Department;
+                ret[33] = Group;
+                ret[34] = Mode;
+                ret[37] = PWDH8;
+                ret[38] = Keep;
+                ret[39] = Message;
+            }
             return ret;
         }
 

@@ -31,10 +31,29 @@ namespace Anviz.SDK
             {
                 var response = await DeviceStream.SendCommand(new GetStaffDataCommand(DeviceId, isFirst, userAmount));
                 var counter = response.DATA[0];
+
+                if (counter == 0)
+                {
+                    log.Debug($"No user records found on device {DeviceId}.");
+                    return users;
+                }
+
+                var reclen = (response.DATA.Length - 1) / counter;
+
+                log.Debug($"Received {counter} user records from device {DeviceId}.");
+                log.Debug($"response.DATA.Length: {response.DATA.Length}.");
+                log.Debug($"UserInfo.RECORD_LENGTH: {reclen}.");
+
                 userAmount -= counter;
                 for (var i = 0; i < counter; i++)
                 {
-                    users.Add(new UserInfo(response.DATA, 1 + i * UserInfo.RECORD_LENGTH));
+                    try
+                    {
+                        users.Add(new UserInfo(response.DATA, 1 + i * reclen, reclen));
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
                 isFirst = false;
             }
