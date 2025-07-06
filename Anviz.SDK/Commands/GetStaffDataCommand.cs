@@ -21,11 +21,17 @@ namespace Anviz.SDK
 {
     public partial class AnvizDevice
     {
+        public event EventHandler<EmployeesDataGetEventArgs> EmployeesDataGet;
+
         public async Task<List<UserInfo>> GetEmployeesData()
         {
             var statistics = await GetDownloadInformation();
             var userAmount = statistics.UserAmount;
             var users = new List<UserInfo>((int)userAmount);
+            
+            var totalCount = userAmount;
+            int currentCount = 0;
+
             var isFirst = true;
             while (userAmount > 0)
             {
@@ -49,6 +55,8 @@ namespace Anviz.SDK
                 {
                     try
                     {
+                        currentCount += 1;
+                        EmployeesDataGet?.Invoke(this, new EmployeesDataGetEventArgs((int)totalCount, currentCount, new UserInfo(response.DATA, 1 + i * reclen, reclen)));
                         users.Add(new UserInfo(response.DATA, 1 + i * reclen, reclen));
                     }
                     catch (Exception)
@@ -59,5 +67,19 @@ namespace Anviz.SDK
             }
             return users;
         }
+    }
+
+    public class EmployeesDataGetEventArgs : EventArgs
+    {
+        public EmployeesDataGetEventArgs(int TotalEmployees, int CurrentEmployee, UserInfo Employee)
+        {
+            this.TotalEmployees = TotalEmployees;
+            this.CurrentEmployee = CurrentEmployee;
+            this.Employee = Employee;
+        }
+
+        public int TotalEmployees { get; }
+        public int CurrentEmployee { get; }
+        public UserInfo Employee { get; }
     }
 }

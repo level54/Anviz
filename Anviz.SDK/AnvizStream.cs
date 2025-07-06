@@ -10,7 +10,7 @@ namespace Anviz.SDK
 {
     internal class AnvizStream : IDisposable
     {
-        private const int DEVICE_TIMEOUT = 20000; //20 seconds
+        private const int DEVICE_TIMEOUT = 10000; //10 seconds
 
         private readonly TcpClient DeviceSocket;
         private readonly NetworkStream DeviceStream;
