@@ -40,18 +40,13 @@ Response: [STX:0xA5][DeviceID:4][ACK:1][RET:1][LEN:2][DATA:0-N][CRC:2]
 | RET byte only present when ACK ≥ 0x80 | ✓ Correct |
 | CRC16 calculated over entire frame | ✓ Correct |
 
-### 1.2 LEN Field Endianness — VERIFY REQUIRED (High)
+### 1.2 LEN Field Endianness — ✅ VERIFIED (M7 2026-04-29)
 
-**Issue**: The TC_B V2 protocol document states the LEN field is **little-endian**. Both `Command.cs` (when writing) and `Response.cs` (when reading) treat LEN as **big-endian**.
+**Status**: No bug. Code is correct.
 
-For payloads under 256 bytes the high byte is zero, so both interpretations produce identical results. This means the bug has gone undetected for all small-packet commands. However:
+**Evidence**: Fingerprint template download (CMD=0x44) logged `[01 52]` big-endian=338, CRC passed. The device sends and accepts LEN in **big-endian** order. The TC_B V2 document's "little-endian" guidance does not apply to this field for the M7 device.
 
-- Standard fingerprint templates: 338 bytes = 0x0152 → big-endian `[0x01][0x52]`, little-endian `[0x52][0x01]`
-- Iris templates: 1280 bytes = 0x0500 → big-endian `[0x05][0x00]`, little-endian `[0x00][0x05]`
-
-**Action required**: Capture a raw fingerprint template download packet (command 0x44) and inspect bytes 6–7 of the response. If the device sends `[0x52][0x01]` (low byte first), swap the serialization/deserialization to little-endian in both `Command.cs` and `Response.cs`.
-
-**Files**: `Anviz.SDK/Commands/Command.cs`, `Anviz.SDK/Responses/Response.cs`
+**Files**: `Anviz.SDK/Commands/Command.cs`, `Anviz.SDK/Responses/Response.cs` — no changes needed.
 
 ### 1.3 CRC16 Algorithm — Correct
 
@@ -63,18 +58,18 @@ For payloads under 256 bytes the high byte is zero, so both interpretations prod
 
 Several commands use codes that do not appear in the TC_B V2 protocol document, and two use codes that conflict with documented commands.
 
-### 2.1 Serial Number Commands — Wrong Codes (Critical)
+### 2.1 Serial Number Commands — ✅ VERIFIED (M7 2026-04-29)
 
-| File | Code in SDK | Protocol Code | Protocol Description |
-|------|-------------|---------------|----------------------|
-| `GetDeviceSNCommand.cs` | **0x24** | **0x46** | Get device S/N (16 bytes) |
-| `SetDeviceSNCommand.cs` | **0x25** | **0x47** | Modify device S/N |
+**Status**: No bug. Command 0x24 is a valid M7 device-specific extension.
 
-Codes 0x24 and 0x25 are not documented anywhere in the TC_B V2 protocol. If the device firmware expects 0x46/0x47, these commands silently fail or return unexpected responses.
+**Evidence**: `GetDeviceSN()` sent CMD=0x24, device responded ACK=0xA4 (=0x24+0x80), DATA=16 bytes, CRC OK. The device correctly handles 0x24/0xA4 as a Get S/N exchange. Code 0x46 from the TC_B V2 document may apply to other device families; for M7, 0x24 is the correct code.
 
-**Action**: Test both 0x24 and 0x46 against real hardware. If 0x46 elicits a correct response, replace the command codes.
+| File | Code in SDK | Result on M7 |
+|------|-------------|--------------|
+| `GetDeviceSNCommand.cs` | 0x24 | ✅ ACK=0xA4, 16 bytes, CRC OK |
+| `SetDeviceSNCommand.cs` | 0x25 | Not tested — assumed symmetric |
 
-**Files**: `Anviz.SDK/Commands/GetDeviceSNCommand.cs`, `Anviz.SDK/Commands/SetDeviceSNCommand.cs`
+**Files**: `Anviz.SDK/Commands/GetDeviceSNCommand.cs`, `Anviz.SDK/Commands/SetDeviceSNCommand.cs` — no changes needed.
 
 ### 2.2 Undocumented Commands (Medium)
 
@@ -90,62 +85,77 @@ The following commands exist in the SDK but have no corresponding entry in the T
 
 ---
 
-## Section 3 — Epoch / Date Encoding Bug (Critical)
+## Section 3 — Epoch / Date Encoding — ✅ VERIFIED CORRECT (M7 2026-04-29)
+
+**Status**: No bug. The review finding was incorrect. Jan 2 epoch is correct for the M7.
 
 **File**: `Anviz.SDK/Utils/DateConversions.cs`
 
-```csharp
-// Current (wrong):
-private static readonly DateTime Epoch = new DateTime(2000, 1, 2);
+**Evidence**: During the 2026-04-29 test session, two records were downloaded at approximately 17:44:10–17:44:12 local time. The raw date bytes `[31 83 AE 6A]` decoded as:
 
-// Correct:
-private static readonly DateTime Epoch = new DateTime(2000, 1, 1);
-```
+- Jan 2 epoch → `2026-04-29 17:44:10` ✅ matches live test timestamp
+- Jan 1 epoch → `2026-04-28 17:44:10` ✗ one day in the past
 
-The TC_B V2 protocol states:
-> "Timestamp reference: January 1, 2000 00:00:00"
+The TC_B V2 document specifies Jan 1, but the M7 device firmware itself uses Jan 2 as its internal epoch. Changing to Jan 1 would introduce a 1-day error on M7 hardware.
 
-The SDK epoch is January **2**, 2000 — a one-day off-by-one error. Every attendance record timestamp decoded from or written to the device is off by **86,400 seconds (1 day)**.
-
-**Action**: Change `new DateTime(2000, 1, 2)` to `new DateTime(2000, 1, 1)`. This is a one-line fix but has a broad impact on all `Record` timestamp decoding.
+**No action required** for M7 targets. If targeting other Anviz device families, verify against their firmware before changing.
 
 ---
 
 ## Section 4 — Data Model / Field Layout Issues
 
-### 4.1 AdvancedSettings — MemoryFullAlarm Field Width (High)
+### 4.1 AdvancedSettings — MemoryFullAlarm Field Width — ✅ VERIFIED (M7 2026-04-29)
+
+**Status**: No bug. 3-byte field is correct for M7. Code is correct.
 
 **File**: `Anviz.SDK/Responses/AdvancedSettings.cs`
 
-The code reads `MemoryFullAlarm` as **3 bytes** at offset 8. The CrossChex SDK API (`CCHEX_GET_BASIC_CFG_INFO2_STRU_EXT_INF`) declares `record_over_alarm` as a **uint (4 bytes)**. If the 0x32 response uses a 4-byte field here, every subsequent field (`RepeatAttendanceDelay`, `DoorSensorDelay`, `ScheduledBellDelay`, `Reserved`) is shifted by 1 byte, causing silent mis-parsing.
+**Evidence**: The 0x32 response from M7 returned DATA=15 bytes total. With `MemoryFullAlarm(3B)=100` (plausible: alarm at 100% full) vs `MemoryFullAlarm(4B)=25600` (implausible), the 3-byte interpretation is clearly correct. The struct total of 15 bytes matches the current implementation.
 
-The CrossChex SDK struct total is **14 bytes**; the current code models **15 bytes**.
+**No action required.**
 
-**Action**: Capture a 0x32 response from a device and count the data bytes. Adjust `AdvancedSettings.cs` if the field is 4 bytes.
+### 4.2 BasicSettings — Date/Time Format Byte — ✅ VERIFIED (M7 2026-04-29)
 
-### 4.2 BasicSettings — Date/Time Format Byte (Medium)
+**Status**: No bug. Combined single-byte parsing is correct for M7.
 
 **File**: `Anviz.SDK/Responses/BasicSettings.cs`
 
-Offset 14 currently combines `DateFormat` (bits 7:1) and `Is24HourClock` (bit 0, inverted) in a single byte. The CrossChex SDK API separates `date_format` and `time_format` as distinct bytes in the 0x30 response. If byte 15 is a separate `time_format` byte in the actual device response, the current single-byte parsing is incorrect and the attendance mode field at offset 15 may be mis-identified.
+**Evidence**: The clock toggle test compared two 0x30 responses with 12-hour and 24-hour clock settings. Byte 14 changed (0x10 → 0x11), byte 15 was unchanged. Bit 0 of byte 14 is the clock format flag, exactly as the current code parses it. Byte 15 is correctly identified as the Attendance field.
 
-**Action**: Verify the 0x30 response byte layout against a captured packet. If two separate bytes, split into distinct fields.
+**No action required.**
 
-### 4.3 Record — Date Field Byte Order (High)
+### 4.3 Record — Date Field Byte Order — ✅ VERIFIED (M7 2026-04-29)
+
+**Status**: No bug. Big-endian byte order is correct for M7.
 
 **File**: `Anviz.SDK/Responses/Record.cs`
 
-The `Date` field (4 bytes at offset 5) is read using `Bytes.Read()`, which performs a big-endian conversion. The protocol document's general guidance for multi-byte fields is little-endian. Combined with the epoch bug in §3, this could produce completely wrong timestamps.
+**Evidence**: Two records downloaded on 2026-04-29. Raw bytes `[31 83 AE 6A]` and `[31 83 AE 6C]`:
 
-**Action**: Capture a 0x40 record download packet and compare the raw 4 bytes at offset 5 against the expected timestamp.
+| Interpretation | Seconds | DateTime |
+|----------------|---------|---------|
+| Big-endian (current) | 830,713,450 | 2026-04-29 17:44:10 ✅ |
+| Little-endian | 1,789,821,745 | 2056-09-19 12:42:25 ✗ |
 
-### 4.4 TimeZone — Missing Sunday (Medium)
+Big-endian produces the correct live timestamp. **No action required.**
+
+### 4.4 TimeZone — Missing Sunday in ToArray() — 🐛 CONFIRMED BUG (M7 2026-04-29)
+
+**Status**: Bug confirmed. `ToArray()` writes only 6 days; device sends 7 days.
 
 **File**: `Anviz.SDK/Responses/AnvizTimeZone.cs`
 
-The current model uses **6 days × 4 bytes = 24 bytes** per timezone zone. The CrossChex SDK API `CChex_GetPeriodTime` documents **7 days × 4 bytes = 28 bytes** per timezone. If the 0x50 response includes Sunday as a 7th day, the current deserialization drops Sunday and misaligns all subsequent zone data.
+**Evidence**: The 0x50 response returned DATA=28 bytes (7 days × 4 bytes). The constructor already loops 7 days (correct). However `ToArray()` loops `day < 6`, writing only 6 days (24 bytes), silently dropping Sunday when writing a timezone back to the device.
 
-**Action**: Verify the 0x50 response length. If 28 bytes/zone, add Sunday to the `DayName` enum and fix the deserialization loop.
+**Fix** (one line in `ToArray()`):
+```csharp
+// Before:
+for (var day = 0; day < 6; day++)
+// After:
+for (var day = 0; day < 7; day++)
+```
+
+**File**: `Anviz.SDK/Responses/AnvizTimeZone.cs` — `ToArray()` method.
 
 ### 4.5 Password — PWDH8 High Byte Not Used (Low)
 
@@ -278,37 +288,85 @@ The SDK uses 0x72/0x73 (extended format, max 8 per request, Unicode) exclusively
 
 ## Section 9 — Prioritized Implementation Roadmap
 
-| Priority | Item | File(s) |
-|----------|------|---------|
-| **Critical** | Fix epoch: `2000-01-02` → `2000-01-01` | `Utils/DateConversions.cs` |
-| **Critical** | Verify and fix SN command codes (0x24/0x25 vs 0x46/0x47) | `Commands/GetDeviceSNCommand.cs`, `Commands/SetDeviceSNCommand.cs` |
-| **High** | Verify LEN field endianness via packet capture; fix if little-endian | `Commands/Command.cs`, `Responses/Response.cs` |
-| **High** | Verify and fix AdvancedSettings field widths (3B vs 4B MemoryFullAlarm) | `Responses/AdvancedSettings.cs` |
-| **High** | Verify Record Date byte order via packet capture | `Responses/Record.cs` |
-| **High** | Typed exceptions for 7 RET error codes (`AnvizException`) | `AnvizStream.cs`, `Responses/Response.cs` |
-| **Medium** | Thread-safety: `SemaphoreSlim` in `AnvizStream.SendAsync` | `AnvizStream.cs` |
-| **Medium** | Verify timezone 7-day layout; add Sunday if needed | `Responses/AnvizTimeZone.cs` |
-| **Medium** | Verify BasicSettings date/time byte split | `Responses/BasicSettings.cs` |
-| **Medium** | Implement Group Info commands (0x52/0x53) | New partial class + commands |
-| **Medium** | Implement Device Capacity query (0x5D) | New partial class + command |
-| **Low** | Implement Clear Admin Flag (0x3D) | New partial class + command |
-| **Low** | Implement Factory Info (0x4A/0x4B) | New partial class + commands |
-| **Low** | Rename `Bytes.Read` → `Bytes.ReadBigEndian`; add `ReadLittleEndian` | `Utils/Bytes.cs` |
-| **Low** | Short message commands (0x56–0x59) | New partial class + commands |
-| **Low** | T&A State tables (0x5A/0x5B, 0x70/0x71) | New partial class + commands |
+Items marked ✅ were verified against M7 hardware on 2026-04-29 and require no code changes.
+
+| Priority | Item | File(s) | Status |
+|----------|------|---------|--------|
+| **High** | Fix `ToArray()` Sunday bug: `day < 6` → `day < 7` | `Responses/AnvizTimeZone.cs` | 🐛 Fix needed |
+| **High** | Typed exceptions for 7 RET error codes (`AnvizException`) | `AnvizStream.cs`, `Responses/Response.cs` | Needed — confirmed by SetBasicSettings FAIL scenario |
+| **Medium** | Thread-safety: `SemaphoreSlim` in `AnvizStream.SendAsync` | `AnvizStream.cs` | Unverified |
+| **Medium** | Implement Group Info commands (0x52/0x53) | New partial class + commands | Unverified |
+| **Medium** | Implement Device Capacity query (0x5D) | New partial class + command | Unverified |
+| **Low** | Implement Clear Admin Flag (0x3D) | New partial class + command | Unverified |
+| **Low** | Implement Factory Info (0x4A/0x4B) | New partial class + commands | Unverified |
+| **Low** | Short message commands (0x56–0x59) | New partial class + commands | Unverified |
+| **Low** | T&A State tables (0x5A/0x5B, 0x70/0x71) | New partial class + commands | Unverified |
+| ~~Critical~~ | ~~Fix epoch: `2000-01-02` → `2000-01-01`~~ | `Utils/DateConversions.cs` | ✅ Jan 2 is correct for M7 |
+| ~~Critical~~ | ~~Verify/fix SN command codes (0x24/0x25 vs 0x46/0x47)~~ | `Commands/GetDeviceSNCommand.cs` | ✅ 0x24 works on M7 |
+| ~~High~~ | ~~Verify LEN endianness; fix if little-endian~~ | `Commands/Command.cs`, `Responses/Response.cs` | ✅ Big-endian confirmed |
+| ~~High~~ | ~~Verify AdvancedSettings MemoryFullAlarm 3B vs 4B~~ | `Responses/AdvancedSettings.cs` | ✅ 3B confirmed, 15-byte total |
+| ~~High~~ | ~~Verify Record Date byte order~~ | `Responses/Record.cs` | ✅ Big-endian confirmed |
+| ~~Medium~~ | ~~Verify timezone 7-day layout~~ | `Responses/AnvizTimeZone.cs` | ✅ 28 bytes confirmed (see §4.4 bug) |
+| ~~Medium~~ | ~~Verify BasicSettings date/time byte split~~ | `Responses/BasicSettings.cs` | ✅ Combined byte confirmed |
 
 ---
 
 ## Section 10 — Verification Steps
 
-Before and after implementing fixes:
+For remaining open items:
 
-1. **Build**: `dotnet build Anviz.sln -c Release` — zero errors, zero warnings
-2. **Packet capture**: Use Wireshark or tcpdump on port 5010 to capture:
-   - A fingerprint template download (0x44) — inspect bytes 6–7 for LEN byte order
-   - An attendance record download (0x40) — inspect bytes 5–8 of each 14-byte record for Date byte order
-   - A GetDeviceSN command — compare responses to 0x24 vs 0x46
-   - A GetAdvancedSettings response (0x32) — count data bytes
-3. **Timestamp check**: After fixing the epoch, decode the first record's DateTime and compare against the device display
-4. **Advanced settings check**: After fixing field widths, verify `MemoryFullAlarm`, `RepeatAttendanceDelay`, and `DoorSensorDelay` match values on the device configuration screen
-5. **Sample project**: `dotnet run --project Sample/Sample.csproj` against real hardware; exercise `GetDateTime`, `GetRecordInfo`, `DownloadRecords`, `GetBasicSettings`, `GetAdvancedSettings`
+1. **Build**: `dotnet build Anviz.SDK/Anviz.SDK.csproj -c Release` — zero errors, zero warnings
+2. **AnvizTimeZone fix**: After changing `day < 6` to `day < 7` in `ToArray()`, call `SetTimeZoneInfo()` with a timezone that includes Sunday hours and verify the device stores Sunday correctly.
+3. **AnvizException**: After implementing typed exceptions, confirm that `SetBasicSettings` returning `RET=FAIL` throws a catchable `AnvizException` with `ReturnCode = AnvizReturnCode.Fail` rather than terminating the session.
+
+---
+
+## Section 11 — M7 Hardware Verification Results (2026-04-29)
+
+All verification performed against an Anviz M7 fingerprint terminal via TCP on port 5010. Diagnostic logging was added to `Anviz.SDK` under a dedicated git branch to capture raw byte values from every response.
+
+### Summary Table
+
+| § | Issue | Result | Evidence |
+|---|-------|--------|---------|
+| 1.2 | LEN field endianness | ✅ **No bug** — big-endian confirmed | FP template 0x44: `[01 52]` = 338 bytes, CRC OK |
+| 2.1 | SN command codes 0x24 vs 0x46 | ✅ **No bug** — 0x24 valid M7 extension | `GetDeviceSN`: CMD=0x24 → ACK=0xA4, 16 bytes, CRC OK |
+| 3 | Epoch Jan 1 vs Jan 2 | ✅ **Review was wrong** — Jan 2 is correct | Records decoded to exact live timestamp; Jan 1 gives yesterday |
+| 4.1 | MemoryFullAlarm 3B vs 4B | ✅ **No bug** — 3B correct, 15-byte total | `GetAdvancedSettings`: DATA=15 bytes; 3B=100 (plausible), 4B=25600 (implausible) |
+| 4.2 | BasicSettings date/clock byte split | ✅ **No bug** — combined byte confirmed | Clock toggle: byte 14 changed (0x10→0x11), byte 15 unchanged |
+| 4.3 | Record date byte order | ✅ **No bug** — big-endian confirmed | `[31 83 AE 6A]` big-endian→`2026-04-29 17:44:10`✅, little-endian→`2056-09-19`✗ |
+| 4.4 | TimeZone Sunday missing | 🐛 **Bug confirmed** — `ToArray()` drops Sunday | Device sends 28 bytes (7 days); `ToArray()` loops `day < 6`, writes only 6 days |
+
+### Additional Observations
+
+- **Unsolicited ACK=0xDF packet**: Received immediately after the connection handshake (before any command was sent), with `awaiting=0x00 match=False`. The receiver correctly routed it to the `ReceivedPacket` event without error. This appears to be a push notification from the device (possibly a real-time attendance record); the existing event infrastructure handles it correctly.
+
+- **§5 error handling in practice**: During `SetBasicSettings`, the device returned `RET=FAIL` (0x01). This caused `Response.FromStream` to throw a generic `Exception("RET: FAIL")`, which `AnvizStream` translated into `DeviceConnectionLostException`, killing the entire session. Typed `AnvizException` (§5) would allow callers to recover from `ACK_FAIL` without losing the connection.
+
+### Raw Log Excerpts
+
+**§1.2 LEN — fingerprint template download:**
+```
+[§1.2 LEN] Raw bytes: [01 52] big-endian=338 little-endian=20993 (current code uses big-endian=338)
+[§1.2 LEN] DATA length after parse: 338 bytes, CRC OK
+```
+
+**§2.1 SN command:**
+```
+[§2.1] Sending command: expecting ACK=0xA4 from device
+[§1.2/§2.1] Frame received: STX=0xA5 ACK=0xA4 DeviceID=[00 00 00 01]
+[§1.2 LEN] DATA length after parse: 16 bytes, CRC OK
+[§2.1] Receiver got ACK=0xA4 (awaiting=0xA4 match=True)
+```
+
+**§3 Epoch — two attendance records:**
+```
+[§4.3 Record] UserCode=54390 raw date bytes=[31 83 AE 6A] big-endian seconds=830713450 (→ 2026-04-29 17:44:10) little-endian seconds=1789821745 (→ 2056-09-19 12:42:25)
+[§3 Epoch] raw seconds=0x3183AE6A (830713450d) epoch=2000-01-02 → DateTime=2026-04-29 17:44:10 (if epoch were 2000-01-01: 2026-04-28 17:44:10)
+```
+
+**§4.4 TimeZone — 28 bytes received:**
+```
+[§4.4 TimeZone] Raw DATA (28 bytes, expected 24 for 6-day or 28 for 7-day): 00 00 00 00 00 00 00 00 ... 00 00 00 00
+[§4.4 TimeZone] Day[6] (Sunday): [00 00 00 00] From=00:00 To=00:00
+```
