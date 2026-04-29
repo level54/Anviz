@@ -19,6 +19,7 @@ namespace Anviz.SDK
 
         private byte ResponseCode = 0;
         private TaskCompletionSource<Response> taskEmitter;
+        private readonly SemaphoreSlim _commandLock = new SemaphoreSlim(1, 1);
 
         public event EventHandler<Response> ReceivedPacket;
         public event EventHandler<Exception> DeviceError;
@@ -48,6 +49,11 @@ namespace Anviz.SDK
                 try
                 {
                     response = await Response.FromStream(DeviceStream, CancellationTokenSource.Token);
+                }
+                catch (AnvizException ex)
+                {
+                    taskEmitter.TrySetException(ex);
+                    continue;
                 }
                 catch (Exception ex)
                 {
@@ -82,23 +88,31 @@ namespace Anviz.SDK
             {
                 throw new DeviceConnectionLostException();
             }
-            ResponseCode = cmd.ResponseCode;
-            await cmd.Send(DeviceStream);
-            taskEmitter = new TaskCompletionSource<Response>();
-            if (await Task.WhenAny(taskEmitter.Task, Task.Delay(DEVICE_TIMEOUT)) != taskEmitter.Task)
+            await _commandLock.WaitAsync();
+            try
             {
-                if (DeviceSocket.Connected)
+                taskEmitter = new TaskCompletionSource<Response>();
+                ResponseCode = cmd.ResponseCode;
+                await cmd.Send(DeviceStream);
+                if (await Task.WhenAny(taskEmitter.Task, Task.Delay(DEVICE_TIMEOUT)) != taskEmitter.Task)
                 {
-                    DeviceSocket.Close();
+                    if (DeviceSocket.Connected)
+                    {
+                        DeviceSocket.Close();
+                    }
+                    throw new DeviceConnectionLostException("Device timeout waiting response.");
                 }
-                throw new DeviceConnectionLostException("Device timeout waiting response.");
+                var result = await taskEmitter.Task;
+                if (result == null)
+                {
+                    throw new DeviceConnectionLostException();
+                }
+                return result;
             }
-            var result = await taskEmitter.Task;
-            if (result == null)
+            finally
             {
-                throw new DeviceConnectionLostException();
+                _commandLock.Release();
             }
-            return result;
         }
 
         public void Dispose()
@@ -109,6 +123,7 @@ namespace Anviz.SDK
             DeviceStream.Dispose();
             DeviceSocket.Close();
             CancellationTokenSource.Dispose();
+            _commandLock.Dispose();
         }
     }
 }

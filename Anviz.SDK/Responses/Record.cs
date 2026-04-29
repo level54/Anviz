@@ -17,8 +17,7 @@ namespace Anviz.SDK.Responses
         internal Record(byte[] data, int offset)
         {
             UserCode = Bytes.Read(Bytes.Split(data, offset, 5));
-            var rawTime = Bytes.Read(Bytes.Split(data, offset + 5, 4));
-            DateTime = DateConversions.RecordToDateTime(rawTime);
+            DateTime = DateConversions.RecordToDateTime(Bytes.Read(Bytes.Split(data, offset + 5, 4)));
             BackupCode = data[offset + 9];
             RecordType = data[offset + 10];
             WorkType = Bytes.Read(Bytes.Split(data, offset + 11, 3));

@@ -66,5 +66,6 @@ namespace Anviz.SDK.Utils
         {
             return Encoding.ASCII.GetString(data).TrimEnd('\0');
         }
+
     }
 }

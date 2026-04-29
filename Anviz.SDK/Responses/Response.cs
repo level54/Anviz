@@ -1,4 +1,5 @@
-﻿using Anviz.SDK.Utils;
+﻿using Anviz.SDK.Exceptions;
+using Anviz.SDK.Utils;
 using System;
 using System.Net.Sockets;
 using System.Threading;
@@ -61,6 +62,7 @@ namespace Anviz.SDK.Responses
             }
             var CH = Bytes.Split(data, 1, 4);
             var ACK = data[5];
+
             if (ACK < 0x80)
             {
                 if (await stream.ReadAsync(data, base_offset, 2, ct) != 2)
@@ -78,7 +80,7 @@ namespace Anviz.SDK.Responses
                 var RET = (RetVal)data[6];
                 if (RET != RetVal.SUCCESS)
                 {
-                    throw new Exception("RET: " + RET.ToString());
+                    throw new AnvizException((AnvizReturnCode)data[6]);
                 }
                 base_offset += 3;
             }
@@ -95,6 +97,7 @@ namespace Anviz.SDK.Responses
             {
                 throw new Exception("Invalid CRC");
             }
+
             return new Response(PacketData, Bytes.Read(CH), ACK);
         }
 
