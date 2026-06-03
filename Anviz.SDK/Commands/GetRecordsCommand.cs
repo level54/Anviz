@@ -28,6 +28,7 @@ namespace Anviz.SDK
 
         public async Task<List<Record>> DownloadRecords(bool onlyNew = false)
         {
+            using var _op = BeginOperation("DownloadRecords");
             var statistics = await GetDownloadInformation();
             var recordAmount = onlyNew ? statistics.NewRecordAmount : statistics.AllRecordAmount;
             var records = new List<Record>((int)recordAmount);

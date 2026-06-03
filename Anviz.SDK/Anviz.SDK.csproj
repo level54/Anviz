@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>8.0</LangVersion>
     <ProjectGuid>{30099B6A-183A-4003-8449-8F36A06462BA}</ProjectGuid>
     <Authors>Huseyin DEMIRTAS, Gianni Angelozzi</Authors>
     <Company>MxLabs</Company>

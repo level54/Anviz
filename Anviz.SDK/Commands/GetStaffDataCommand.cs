@@ -25,6 +25,7 @@ namespace Anviz.SDK
 
         public async Task<List<UserInfo>> GetEmployeesData()
         {
+            using var _op = BeginOperation("GetEmployeesData");
             var statistics = await GetDownloadInformation();
             var userAmount = statistics.UserAmount;
             var users = new List<UserInfo>((int)userAmount);

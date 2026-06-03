@@ -9,6 +9,14 @@ namespace Anviz.SDK
     {
         internal static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
+        /// <summary>
+        /// Scopes an operation name into the log context ([%property{op}]) for the
+        /// lifetime of the returned token. Flows across async/await and thread-pool
+        /// hops via the logical call context.
+        /// </summary>
+        internal static IDisposable BeginOperation(string name) =>
+            log4net.LogicalThreadContext.Stacks["op"].Push(name);
+
         public ulong DeviceId { get; private set; } = 0;
         public string DeviceType { get; private set; } = string.Empty;
         public BiometricType DeviceBiometricType { get; private set; } = BiometricType.Unknown;

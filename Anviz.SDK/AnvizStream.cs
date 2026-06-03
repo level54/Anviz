@@ -43,6 +43,7 @@ namespace Anviz.SDK
 
         private async void ReceiverThreadFunc()
         {
+            using var _op = AnvizDevice.BeginOperation("DeviceReceiver");
             while (DeviceSocket.Connected && !CancellationTokenSource.IsCancellationRequested)
             {
                 Response response = null;
