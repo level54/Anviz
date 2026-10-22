@@ -52,17 +52,25 @@ namespace Anviz.SDK
                 log.Debug($"UserInfo.RECORD_LENGTH: {reclen}.");
 
                 userAmount -= counter;
+                var cancel = false;
                 for (var i = 0; i < counter; i++)
                 {
                     try
                     {
                         currentCount += 1;
-                        EmployeesDataGet?.Invoke(this, new EmployeesDataGetEventArgs((int)totalCount, currentCount, new UserInfo(response.DATA, 1 + i * reclen, reclen)));
+                        var args = new EmployeesDataGetEventArgs((int)totalCount, currentCount, new UserInfo(response.DATA, 1 + i * reclen, reclen));
+                        EmployeesDataGet?.Invoke(this, args);
+                        cancel |= args.Cancel;
                         users.Add(new UserInfo(response.DATA, 1 + i * reclen, reclen));
                     }
                     catch (Exception)
                     {
                     }
+                }
+                if (cancel)
+                {
+                    log.Debug($"GetEmployeesData on device {DeviceId} cancelled after {currentCount} of {totalCount} users.");
+                    return users;   // the users read so far; no further page is asked for
                 }
                 isFirst = false;
             }
@@ -82,5 +90,8 @@ namespace Anviz.SDK
         public int TotalEmployees { get; }
         public int CurrentEmployee { get; }
         public UserInfo Employee { get; }
+
+        /// <summary>Set by a handler to stop the download after this page of users.</summary>
+        public bool Cancel { get; set; }
     }
 }
