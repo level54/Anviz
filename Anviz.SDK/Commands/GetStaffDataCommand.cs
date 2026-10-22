@@ -61,7 +61,7 @@ namespace Anviz.SDK
                         var args = new EmployeesDataGetEventArgs((int)totalCount, currentCount, new UserInfo(response.DATA, 1 + i * reclen, reclen));
                         EmployeesDataGet?.Invoke(this, args);
                         cancel |= args.Cancel;
-                        users.Add(new UserInfo(response.DATA, 1 + i * reclen, reclen));
+                        users.Add(args.Employee);
                     }
                     catch (Exception)
                     {
