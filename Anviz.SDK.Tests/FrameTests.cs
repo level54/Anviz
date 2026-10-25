@@ -101,4 +101,20 @@ public class FrameTests
         Assert.Equal(new byte[] { 1, 1, 6, 0, 0 }, record[nameEnd..(nameEnd + 5)]);
         Assert.Equal("ABCDEFGHIJ", Assert.Single(fake.Users).Name);
     }
+    [Fact]
+    public async Task RX5_UserTheReadFailsOn_IsSkipped_AndRaisedAsDeviceError()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        fake.Users.AddRange([new FakeUser(1, "A"), new FakeUser(2, "B"), new FakeUser(3, "C")]);
+        using var device = await fake.ConnectAsync();
+        var errors = new List<Exception>();
+        device.DeviceError += (_, e) => errors.Add(e);
+        var failure = new InvalidOperationException("The handler failed on user 2.");
+        device.EmployeesDataGet += (_, e) => { if (e.Employee.Id == 2) throw failure; };
+
+        var users = await device.GetEmployeesData();
+
+        Assert.Equal([1UL, 3UL], users.Select(u => u.Id));
+        Assert.Same(failure, Assert.Single(errors));
+    }
 }

@@ -63,8 +63,11 @@ namespace Anviz.SDK
                         cancel |= args.Cancel;
                         users.Add(args.Employee);
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
+                        // The other users are still read; this one is reported, never dropped silently.
+                        log.Error($"GetEmployeesData on device {DeviceId}: user {currentCount} of {totalCount} skipped.", ex);
+                        DeviceError?.Invoke(this, ex);
                     }
                 }
                 if (cancel)
