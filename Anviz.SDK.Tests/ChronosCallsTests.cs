@@ -4,6 +4,7 @@ using Anviz.SDK.Responses;
 using Anviz.SDK.Tests.Fake;
 using Anviz.SDK.Utils;
 using static Anviz.SDK.Tests.Fake.CommandCode;
+using static Anviz.SDK.Tests.TestHelpers;
 
 namespace Anviz.SDK.Tests;
 
@@ -17,22 +18,12 @@ public class ChronosCallsTests
     private const ulong Password = 1234, Card = 99887766;
     private static readonly byte[] CardBytes = [0x05, 0xF4, 0x2A, 0x96]; // 99887766, high byte first
     private static readonly byte[] PasswordBytes = [0x40, 0x04, 0xD2];  // length 4 in the high nibble, then 1234
-    private static readonly TimeSpan Wait = TimeSpan.FromSeconds(5);
-
-    /// <summary>The frames after the 0x48 that Connect sends.</summary>
-    private static Frame[] AfterConnect(FakeAnvizDevice fake) => fake.Received.Skip(1).ToArray();
 
     private static byte[] Template(byte seed) => Enumerable.Range(0, 338).Select(i => (byte)(i * seed)).ToArray();
 
     /// <summary>The fake's own answer to 0x48: "M7A+-N" zero-padded to 8 bytes.</summary>
     private static Frame TypeCodeAnswer(FakeAnvizDevice fake) =>
         new(fake.DeviceId, GetDeviceTypeCode + 0x80, FakeAnvizDevice.AckSuccess, Encoding.ASCII.GetBytes("M7A+-N\0\0"));
-
-    private static void AssertFrame(byte code, byte[] data, Frame frame)
-    {
-        Assert.Equal(code, frame.Code);
-        Assert.Equal(data, frame.Data);
-    }
 
     [Fact]
     public async Task GetDeviceTypeCode_ReadsTypeCode()
@@ -57,7 +48,7 @@ public class ChronosCallsTests
         fake.Templates[(1, 1)] = Template(1);
         fake.Templates[(1, 2)] = Template(2);
         fake.Templates[(3, 1)] = Template(3);
-        for (var i = 0; i < 7; i++) fake.Records.Add(new FakeRecord(1, new DateTime(2026, 10, 25), 0) { New = i < 2 });
+        AddRecords(fake, 7, i => i < 2);
         using var device = await fake.ConnectAsync();
 
         var info = await device.GetDownloadInformation();
@@ -244,7 +235,7 @@ public class ChronosCallsTests
     public async Task DeleteAllRecords_SendsMode0()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
-        for (var i = 0; i < 5; i++) fake.Records.Add(new FakeRecord(1, new DateTime(2026, 10, 25), 0));
+        AddRecords(fake, 5);
         using var device = await fake.ConnectAsync();
 
         await device.DeleteAllRecords();

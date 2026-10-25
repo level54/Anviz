@@ -5,6 +5,7 @@ using Anviz.SDK.Responses;
 using Anviz.SDK.Tests.Fake;
 using Anviz.SDK.Utils;
 using static Anviz.SDK.Tests.Fake.CommandCode;
+using static Anviz.SDK.Tests.TestHelpers;
 using Bell = Anviz.SDK.Responses.ScheduledBell;
 using Record = Anviz.SDK.Responses.Record;
 using Day = Anviz.SDK.Responses.AnvizTimeZone.DayName;
@@ -19,21 +20,7 @@ namespace Anviz.SDK.Tests;
 /// </summary>
 public class OtherCommandsTests
 {
-    private static readonly TimeSpan Wait = TimeSpan.FromSeconds(5);
-
-    /// <summary>The frames after the 0x48 that Connect sends.</summary>
-    private static Frame[] AfterConnect(FakeAnvizDevice fake) => fake.Received.Skip(1).ToArray();
-
     private static byte[] Bytes(int length, byte seed) => Enumerable.Range(0, length).Select(i => (byte)(i * seed + 1)).ToArray();
-
-    private static byte[] BigEndian(ulong value, int length) =>
-        Enumerable.Range(0, length).Select(i => (byte)(value >> (8 * (length - 1 - i)))).ToArray();
-
-    private static void AssertFrame(byte code, byte[] data, Frame frame)
-    {
-        Assert.Equal(code, frame.Code);
-        Assert.Equal(data, frame.Data);
-    }
 
     /// <summary>A command the fake refuses: ACK_FAIL, and the frame error it kept (taken here, so it does not fail the test).</summary>
     private static async Task AssertRefused(FakeAnvizDevice fake, Func<Task> call, string frameError)
@@ -270,16 +257,33 @@ public class OtherCommandsTests
         // R41.3: the document counts the seconds since 2000; today's code counts from 2000-01-02, so the device
         // (the fake counts from 2000-01-01) stores the clocking one day early.
         var seconds = (ulong)(when - new DateTime(2000, 1, 2)).TotalSeconds;
-        AssertFrame(UploadRecord, [0, 0, 0, 0, 77, .. BigEndian(seconds, 4), 2, 1, 1, 2, 3], Assert.Single(AfterConnect(fake)));
+        AssertFrame(UploadRecord, [0, 0, 0, 0, 77, .. FakeAnvizDevice.BigEndian(seconds, 4), 2, 1, 1, 2, 3], Assert.Single(AfterConnect(fake)));
         var stored = Assert.Single(fake.Records);
         Assert.Equal((77UL, when.AddDays(-1), (byte)1), (stored.UserCode, stored.DateTime, stored.RecordType));
+    }
+
+    [Fact]
+    public async Task DownloadRecords_OnlyNew_Sends2ThenPages_ReadsOnlyTheNewRecords()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        AddRecords(fake, 40, i => i % 4 != 0); // 30 new among 40
+        using var device = await fake.ConnectAsync();
+
+        var records = await device.DownloadRecords(onlyNew: true);
+
+        // R40.1: parameter 2 restarts on the new records, 0 goes on; the amount is the 0x3C new record amount, <= 25 a page.
+        Assert.Collection(AfterConnect(fake),
+            f => AssertFrame(GetRecordInformation, [], f),
+            f => AssertFrame(DownloadRecords, [0x02, 25], f),
+            f => AssertFrame(DownloadRecords, [0x00, 5], f));
+        Assert.Equal(fake.Records.Where(r => r.New).Select(r => r.UserCode), records.Select(r => r.UserCode));
     }
 
     [Fact]
     public async Task ClearNewRecords_SendsType1_ClearsEveryNewMark()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
-        for (var i = 0; i < 5; i++) fake.Records.Add(new FakeRecord(1, new DateTime(2026, 10, 25), 0) { New = i >= 2 });
+        AddRecords(fake, 5, i => i >= 2);
         using var device = await fake.ConnectAsync();
 
         await device.ClearNewRecords();
@@ -293,7 +297,7 @@ public class OtherCommandsTests
     public async Task ClearNewRecords_Amount_SendsType2AndTheAmount()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
-        for (var i = 0; i < 5; i++) fake.Records.Add(new FakeRecord(1, new DateTime(2026, 10, 25), 0) { New = i >= 2 });
+        AddRecords(fake, 5, i => i >= 2);
         using var device = await fake.ConnectAsync();
 
         await device.ClearNewRecords(2);
@@ -532,15 +536,37 @@ public class OtherCommandsTests
     [InlineData("M7A+-N", BiometricType.Finger)]
     [InlineData("M5Plus", BiometricType.Finger)]
     [InlineData("TX628", BiometricType.Unknown)]
-    public async Task GetDeviceBiometricType_DecodesTheTypeCode(string typeCode, BiometricType expected)
+    public async Task GetDeviceBiometricType_DecodesTheTypeCode_Today(string typeCode, BiometricType expected)
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         fake.DeviceTypeCode = typeCode;
         using var device = await fake.ConnectAsync();
 
+        // R48.4: the document has no mapping from type code to biometric type; this is today's BiometricTypes table.
         Assert.Equal(expected, await device.GetDeviceBiometricType());
         Assert.Equal((expected, typeCode), (device.DeviceBiometricType, device.DeviceType));
         AssertFrame(GetDeviceTypeCode, [], Assert.Single(AfterConnect(fake)));
+    }
+
+    [Fact]
+    public async Task ReceivedRecord_RealTimeRecord0xDF_RaisesItWithTheRecord_Today()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        var received = new TaskCompletionSource<Record>(TaskCreationOptions.RunContinuationsAsynchronously);
+        device.ReceivedRecord += (_, r) => received.TrySetResult(r);
+        var when = new DateTime(2026, 10, 25, 7, 58, 12);
+
+        await fake.SendRealTimeRecordAsync(new FakeRecord(123456, when, 0x81) { BackupCode = 2, WorkType = 0x010203 });
+        var r = await received.Task.WaitAsync(Wait, TestContext.Current.CancellationToken);
+
+        // RF.14: the record as section 41 lays it out, but R40.5: today's code counts the seconds from 2000-01-02, so
+        // the time comes back one day later than the device's (the fake counts from 2000-01-01).
+        Assert.Equal(
+            (123456UL, when.AddDays(1), (byte)2, (byte)0x81, 0x010203UL),
+            (r.UserCode, r.DateTime, r.BackupCode, r.RecordType, r.WorkType));
+        // "only response message": the PC sends nothing back.
+        Assert.Empty(AfterConnect(fake));
     }
 
     [Fact]

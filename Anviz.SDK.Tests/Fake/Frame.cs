@@ -125,12 +125,14 @@ public static class CommandCode
     public const byte SetBell = 0x55;
     /// <summary>38. Enroll user FP online.</summary>
     public const byte EnrollFingerprint = 0x5C;
+    /// <summary>40. Output signal to open lock without verifying user.</summary>
+    public const byte OpenLock = 0x5E;
+    /// <summary>41. Sent T&amp;A record in real time: device-sent, as an answer (0xDF) only.</summary>
+    public const byte RealTimeRecord = 0x5F;
     /// <summary>44. Download employees data (extended).</summary>
     public const byte DownloadStaff = 0x72;
     /// <summary>45. Upload staff information (extended).</summary>
     public const byte UploadStaff = 0x73;
-    /// <summary>40. Output signal to open lock without verifying user.</summary>
-    public const byte OpenLock = 0x5E;
     /// <summary>61. Get device serial number.</summary>
     public const byte GetSerialNumber = 0x24;
     /// <summary>62. Modify device serial number.</summary>

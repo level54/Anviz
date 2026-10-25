@@ -172,6 +172,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     public Dictionary<(ulong UserCode, byte BackupCode), byte[]> Templates { get; } = [];
 
     private int recordCursor, staffCursor;
+    private bool newRecordsOnly;
 
     /// <summary>Every well-formed frame received, in order.</summary>
     public IReadOnlyList<Frame> Received
@@ -199,6 +200,13 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// </summary>
     public Task PingAsync() => latestStream!.WriteAsync(new Frame(DeviceId, 0x7F, null, []).ToBytes(), stop.Token).AsTask();
 
+    /// <summary>
+    /// 41. Sent T&amp;A record in real time: the device sends, on the latest connection, an answer-format frame (ACK 0xDF,
+    /// RET ACK_SUCCESS, LEN 14) holding one record; "only response message", so the PC sends nothing back.
+    /// </summary>
+    public Task SendRealTimeRecordAsync(FakeRecord record) =>
+        latestStream!.WriteAsync(new Frame(DeviceId, RealTimeRecord + 0x80, AckSuccess, RecordBytes(record)).ToBytes(), stop.Token).AsTask();
+
     /// <summary>One-shot: the next answer is written in pieces, cut at these byte offsets, with a short pause between.</summary>
     public void SplitNextAnswer(params int[] cuts) => nextCuts = cuts;
 
@@ -216,7 +224,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     }
 
     // The document writes no byte order for multi-byte data; every multi-byte example (LEN) is high byte first.
-    private static byte[] BigEndian(ulong value, int length)
+    internal static byte[] BigEndian(ulong value, int length)
     {
         var bytes = new byte[length];
         for (var i = length - 1; i >= 0; i--, value >>= 8) bytes[i] = (byte)value;
@@ -242,29 +250,31 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     ];
 
     /// <summary>
-    /// 10. Download T&amp;A records: parameter 1 restarts (all records), 0 goes on; record amount &lt;= 25. DATA = N, then
-    /// N records of 14 bytes: user code (5), seconds since 2000 (4), backup code, record type, work types (3).
+    /// 10. Download T&amp;A records: parameter 1 restarts on all records, 2 restarts on the new records only, 0 goes on
+    /// (0x10, send the last packet again, is not modelled); record amount &lt;= 25. DATA = N, then N records of 14 bytes
+    /// (<see cref="RecordBytes"/>). The document does not say a download clears the new marks: it does not.
     /// </summary>
     private Frame DownloadRecordsAnswer(Frame command)
     {
         var (parameter, amount) = (command.Data[0], command.Data[1]);
-        if (parameter == 1) recordCursor = 0;
+        if (parameter is 1 or 2) (recordCursor, newRecordsOnly) = (0, parameter == 2);
         else if (parameter != 0) return NotAnswered(command, $"parameter {parameter}");
         if (amount > 25) return NotAnswered(command, $"record amount {amount} (the document allows 25)");
 
-        var page = Records.Skip(recordCursor).Take(amount).ToList();
+        var page = (newRecordsOnly ? Records.Where(r => r.New) : Records).Skip(recordCursor).Take(amount).ToList();
         recordCursor += page.Count;
-        var data = new List<byte> { (byte)page.Count };
-        foreach (var record in page)
-        {
-            data.AddRange(BigEndian(record.UserCode, 5));
-            data.AddRange(BigEndian((ulong)(record.DateTime - RecordEpoch).TotalSeconds, 4));
-            data.Add(0); // backup code: FP1
-            data.Add(record.RecordType);
-            data.AddRange(BigEndian(0, 3)); // work type
-        }
-        return Answer(command, [.. data]);
+        return Answer(command, [(byte)page.Count, .. page.SelectMany(RecordBytes)]);
     }
+
+    /// <summary>10. / 41. A record, 14 bytes: user code (5), seconds since 2000 (4), backup code, record type, work types (3).</summary>
+    private static byte[] RecordBytes(FakeRecord record) =>
+    [
+        .. BigEndian(record.UserCode, 5),
+        .. BigEndian((ulong)(record.DateTime - RecordEpoch).TotalSeconds, 4),
+        record.BackupCode,
+        record.RecordType,
+        .. BigEndian(record.WorkType, 3),
+    ];
 
     /// <summary>
     /// 44. Download employees data (extended), B) Unicode: parameter 1 starts, 0 goes on; at most 8 records per answer.
@@ -627,6 +637,12 @@ public sealed record FakeUser(ulong UserCode, string Name)
 
 public sealed record FakeRecord(ulong UserCode, DateTime DateTime, byte RecordType)
 {
+    /// <summary>10. Backup code: 0 FP1, 1 FP2, 2 password, 3 card.</summary>
+    public byte BackupCode { get; init; }
+
+    /// <summary>10. Work types, 3 bytes.</summary>
+    public ulong WorkType { get; init; }
+
     /// <summary>Counted in the new record amount (0x3C).</summary>
     public bool New { get; init; }
 }
