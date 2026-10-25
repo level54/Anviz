@@ -220,6 +220,29 @@ public class FrameTests
         await Assert.ThrowsAsync<DeviceConnectionLostException>(device.GetDownloadInformation);
     }
 
+    [Fact]
+    public async Task RX3_PingsWhileCommandsAreWritten_EveryFrameArrivesWhole()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        var ct = TestContext.Current.CancellationToken;
+
+        // 50 commands of 321 bytes (8 Unicode staff records) while the device pings 50 times: each pong and each
+        // command must reach the fake as a whole frame (a broken frame is a frame error, which fails the test).
+        var commands = Task.Run(async () =>
+        {
+            for (var i = 0; i < 50; i++)
+                await device.SetEmployeesDataUnicode([.. Enumerable.Range(1, 8).Select(u => new UserInfo((ulong)u, "Name"))]);
+        }, ct);
+        for (var i = 0; i < 50; i++) await fake.PingAsync();
+        await commands;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(Wait);
+        while (fake.Received.Count(f => f.Code == 0xFF) < 50) await Task.Delay(10, timeout.Token);
+        Assert.Equal(50, fake.Received.Count(f => f.Code == UploadStaff));
+    }
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);

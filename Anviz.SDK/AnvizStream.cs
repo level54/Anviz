@@ -34,7 +34,8 @@ namespace Anviz.SDK
         private PendingCall pending;
         private long received; // bytes the reader has taken from the stream
         private volatile bool closed;
-        private readonly SemaphoreSlim _commandLock = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _commandLock = new SemaphoreSlim(1, 1); // one command at a time, until its answer
+        private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);   // one frame written at a time
 
         public event EventHandler<Response> ReceivedPacket;
         public event EventHandler<Exception> DeviceError;
@@ -66,7 +67,7 @@ namespace Anviz.SDK
                     }
                     if (response.ResponseCode == 0x7F)
                     {
-                        await new PongCommand(response.DeviceID).Send(DeviceStream);
+                        await WriteAsync(new PongCommand(response.DeviceID));
                         ReceivedPacket?.Invoke(this, response);
                     }
                     else if (TakePending(response.ResponseCode, frameStart) is PendingCall call)
@@ -150,7 +151,7 @@ namespace Anviz.SDK
                 {
                     throw new DeviceConnectionLostException();
                 }
-                await cmd.Send(DeviceStream);
+                await WriteAsync(cmd);
                 if (await Task.WhenAny(call.Answer.Task, Task.Delay(DEVICE_TIMEOUT)) != call.Answer.Task)
                 {
                     Close();
@@ -167,6 +168,23 @@ namespace Anviz.SDK
             {
                 Interlocked.CompareExchange(ref pending, null, call);
                 _commandLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// RX.3: a command and the reader's pong share the stream; the write lock keeps their bytes apart. It is held for
+        /// the write only, so the reader never waits for a command's answer.
+        /// </summary>
+        private async Task WriteAsync(Command cmd)
+        {
+            await _writeLock.WaitAsync();
+            try
+            {
+                await cmd.Send(DeviceStream);
+            }
+            finally
+            {
+                _writeLock.Release();
             }
         }
 
