@@ -15,18 +15,19 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 | Verdict | Rows | What it means |
 |---|---:|---|
 | matches | 116 | The code does what the document says. |
-| deviates — M7 decides (S6) | 25 | The code differs from the document, or the document says nothing. The M7 run decides: if the M7 follows the document the code is fixed; if it follows the code, the code stays with a `// M7 deviation:` comment. |
+| deviates — M7 decides (S6) | 27 | The code differs from the document, or the document says nothing. The M7 run decides: if the M7 follows the document the code is fixed; if it follows the code, the code stays with a `// M7 deviation:` comment. |
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
-| fault — fixed in S3 | 11 | A fault in reading or sending frames, error answers or the background reader. Slice S3 fixes it. |
-| fixed (S3, commit) | 7 | An S3 fault fixed in the named commit. |
+| fault — fixed in S3 | 0 | A fault in reading or sending frames, error answers or the background reader. Slice S3 fixes it. |
+| fixed (S3, commit) | 16 | An S3 fault fixed in the named commit. |
 | fault — fixed in S4 | 5 | A speed-only fault (buffers, allocations, timers, logging). Slice S4 fixes it. |
 | noted — no change (D3) | 1 | Found, but changing it would change the public behaviour (RX.8). |
 
-Of the 25 "M7 decides" rows, 14 are places where the document is **silent** (it never says how a value is encoded)
+Of the 27 "M7 decides" rows, 14 are places where the document is **silent** (it never says how a value is encoded)
 and the code picked something; the M7 shows what the device really does. Of the 18 S3 rows, 4 (R44.5, R45.5, R4C.5,
-R5C.6) are the error-answer fault RF.10 seen from one command; they went with it. Fixed so far: RF.10, RF.12, RF.15
-and those 4.
+R5C.6) are the error-answer fault RF.10 seen from one command; they went with it. All 16 left in S3 are fixed; R73.11
+and R73.13 (the per-user "stored" answer flag) moved to "M7 decides": whether the M7 marks an updated user as not stored
+is unknown.
 
 **Key to the codes in this document**
 
@@ -62,13 +63,13 @@ and those 4.
    in S3.
 4. **"Delete all users" sends data the document says it does not take** (R4D.1). Chronos calls it. The document gives
    0x4D no data; the SDK sends 6 bytes. A device that follows the document refuses it, and today that refusal also
-   closes the connection (point 1). The M7 may not run it (forbidden), so the layout stays unless the owner rules.
+   closes the connection (point 1, fixed in S3). The M7 may not run it (forbidden), so the layout stays unless the owner rules.
 5. **Clocking times may be one day late** (R40.5). The SDK counts record seconds from 2 January 2000; the document says
    "since the year 2000". The CrossChex SDK document says 2 January, which is probably why the code does it. The M7
    download decides. Every clocking Chronos downloads goes through this.
 
 Also worth knowing: a frame that arrives in more than one TCP piece closes the connection (RF.15, fixed in S3), and
-setting users ignores the device's per-user "stored / not stored" answer (R73.11, fixed in S3).
+setting users ignores the device's per-user "stored / not stored" answer (R73.11; the M7 run decides, S6).
 
 **How to read the tables.** Each SDK command has one table. Its heading gives the command code, the public method,
 whether Chronos calls it, and the M7 check: *runs*, *forbidden (D2)*, *not run (C6)* (the "new records" family), or
@@ -98,13 +99,13 @@ Document Part I. These rows hold for every command; command tables refer back to
 | RF.8 | CRC byte order | "CRCL CRCH" (the 0x47 answer table alone writes CRCH CRCL — a typo) | Low byte first | doc | pending | matches |
 | RF.9 | RET codes | 8 codes: 0x00 success, 0x01 fail, 0x04 full, 0x05 empty, 0x06 no user, 0x08 capture timeout, 0x0A user occupied, 0x0B finger occupied | All 8 known (`AnvizReturnCode`); any other value is thrown as an unnamed code | doc | pending | matches |
 | RF.10 | Error answer: "When the RET != ACK_SUCCESS, the DATA and LEN … are always 0" | An error answer is 11 bytes: header, RET, LEN 0x00 0x00, CRC | Reads the error answer to its end, checks the CRC, then throws `AnvizException` with its return code; the connection stays. Tests: `FrameTests.ErrorAnswer_IsAnvizException_AndConnectionStays`, `GetFingerprintTemplate_NoUser_Throws_AndTheConnectionStays`. | doc | pending | fixed (S3, `1e3d399`) |
-| RF.11 | Which call an error answer belongs to | The ACK code names the command (command + 0x80) | Any error answer fails whatever call is waiting, whatever its code (then RF.10 closes the connection). Pinned: `ErrorAnswerNotWaitedFor_FailsTheWaitingCall_Today`. | doc | pending | fault — fixed in S3 |
+| RF.11 | Which call an error answer belongs to | The ACK code names the command (command + 0x80) | An error answer fails only the call waiting for its code; an error answer for another code is raised as `DeviceError` (`AnvizException` with its return code) and the connection stays. Test: `FrameTests.RF11_ErrorAnswerForAnotherCode_IsDeviceError_AndTheWaitingCallGetsItsAnswer`. | doc | pending | fixed (S3, `33c0055`) |
 | RF.12 | Frames the device starts (code below 0x80, no RET) | Command format: STX, CH, CMD, LEN (2), DATA, CRC — LEN is bytes 6-7 of the frame | Reads LEN from bytes 6-7. Test: `FrameTests.DeviceSentFrameWithData_IsReadWhole_AndRaisedAsReceivedPacket`. | doc (LEN 0 only: the 0x7F ping) | pending | fixed (S3, `1e3d399`) |
 | RF.13 | Device ping 0x7F | No ping in the document. 0x7F is section 83 "Sending Email", a PC-to-device command for the C5; its answer is 0xFF. | A device-sent 0x7F is taken as a ping: the SDK answers 0xFF (see RFF.1) and raises `DevicePing`. | code | pending | deviates — M7 decides (S6) — document silent (the M7 probably pings only when it connects to a server; the check connects to it) |
 | RF.14 | Real-time record 0xDF (section 41) | Device sends ACK 0xDF, RET, LEN 0x00 0x0E, 14-byte record (layout as R40.4–R40.8); "only response message" — the PC sends nothing back | Raises `ReceivedRecord` with the record; sends nothing back. The record's time is one day late, as R40.5. Pinned: `ReceivedRecord_RealTimeRecord0xDF_RaisesItWithTheRecord_Today`. M7: seen only if real-time mode is already on (the check does not switch it on). | doc | pending | matches |
 | RF.15 | Frame split over several TCP reads | — (TCP may split any frame) | Every part of the frame is read until full. Tests: `FrameTests.SplitHeader_IsReadWhole`, `FrameTests.SplitEverywhere_IsReadWhole`. | doc (can split an answer) | pending | fixed (S3, `1e3d399`) |
 | RF.16 | Bad STX or bad CRC | Document silent on what to do | `DeviceError` raised, connection closed, no attempt to find the next frame. Pinned: `DeviceError_BadCrc_RaisesIt_AndClosesTheConnection`. | doc | pending | matches |
-| RF.17 | Answers nobody asked for | — | An answer with no call waiting for its code is raised as `ReceivedPacket` (kept). But an answer is matched by code alone, CH not compared: a stray answer of the same code (a device repeat) that arrives after the next command has gone out completes that command with the wrong data. | doc | pending | fault — fixed in S3 |
+| RF.17 | Answers nobody asked for | — | An answer with no call waiting for its code is raised as `ReceivedPacket` (kept). An answer completes the waiting call only when it has its code and its first byte came after the command was written (bytes already received or waiting in the socket are earlier frames'); a repeat already here is raised as `ReceivedPacket`. A repeat still on the wire when the command goes cannot be told apart (no sequence number in the protocol). CH is not compared (one device per connection). Test: `FrameTests.RF17_StrayRepeatOfAnAnswer_DoesNotCompleteTheNextCall`. | doc | pending | fixed (S3, `72fb41e`) |
 
 `Command.cs` builds every frame as above (RF.1–RF.8); `PongCommand.cs` has its own table in section 2 (0xFF).
 
@@ -565,7 +566,7 @@ Section 45 B). Data N + N × 40 (N ≤ 8); answer a 2-byte flag.
 | R73.8 | FP enroll state, 36-37 | "can not set, this value is 0" | 0 | doc | pending | matches |
 | R73.9 | Keep, 39 | Reserved; "If user data is empty, set it as 0xFF" | `Keep` (constructor: 0xFF) | doc | pending | matches |
 | R73.10 | Special info, 40 | Bits 7-6 authority; bit 4 card length (1 = 32-bit) | `Message` (constructor: 0x40 = normal user); bit 4 never set, even for a card above 24 bits. Pinned: `SetEmployeesData_SendsRecords_Today`. | doc | pending | deviates — M7 decides (S6) |
-| R73.11 | Answer flag, 2 bytes | Bits 0-11: user 1–12 stored (1) or not (0) | Ignored: a user the device refused is not reported | doc | pending | fault — fixed in S3 |
+| R73.11 | Answer flag, 2 bytes | Bits 0-11: user 1–12 stored (1) or not (0) | Ignored: a user the device refused is not reported | doc | pending | deviates — M7 decides (S6) — moved from S3: whether the M7 marks an updated user as not stored is unknown |
 
 *Fields:* N + 11 per record (R73.2–R73.10: id, password, password high, card, name, department, group, mode, FP
 state, keep, special) + the answer flag (R73.11).
@@ -577,7 +578,7 @@ Section 45 A). Data N + N × 30.
 | Id | Field | Document | Code | Fake | M7 | Verdict |
 |---|---|---|---|---|---|---|
 | R73.12 | The 30-byte record | N ≤ 12; the 11 fields at the ANSI positions (name 13-22, 10 bytes) | Up to 8 per frame; the same fields at the ANSI positions; name ASCII (a name over 10 characters: RX.13); password high byte 28 and special info byte 30 as R73.4 / R73.10 | doc | pending | M5 path — not tested (D8) |
-| R73.13 | Answer flag | As R73.11 | Ignored, as R73.11 (the S3 fix is shared) | doc | pending | fault — fixed in S3 (with R73.11) |
+| R73.13 | Answer flag | As R73.11 | Ignored, as R73.11 | doc | pending | deviates — M7 decides (S6) — moved from S3 with R73.11 |
 
 *Fields:* N + 11 per record (R73.12) + flag (R73.13).
 
@@ -639,18 +640,18 @@ Listed only; nothing is added in CHR27-1.
 
 ## 4. Transport and code faults found by reading
 
-The frame faults are in section 1: **RF.10, RF.11, RF.12, RF.15, RF.17** (all S3). The answer-flag fault is R73.11 /
-R73.13 (S3). The rows below are the rest.
+The frame faults are in section 1: **RF.10, RF.11, RF.12, RF.15, RF.17** (all fixed in S3). The answer flag (R73.11 /
+R73.13) moved from S3 to the M7 run (S6). The rows below are the rest.
 
 | Id | Where | What happens | Verdict |
 |---|---|---|---|
-| RX.1 | `AnvizStream.ReceiverThreadFunc` | The reader is an `async void` method started on a `Thread`. The thread ends at its first `await`; the rest runs on the thread pool, where any exception nothing catches ends the process: a failed pong write, an exception from a caller's `ReceivedPacket` / `DevicePing` / `ReceivedRecord` / `DeviceError` handler, or a short 0xDF record. | fault — fixed in S3 |
-| RX.2 | `AnvizStream.SendCommand` / `Dispose` | The answer's `TaskCompletionSource` has no `RunContinuationsAsynchronously`, so the caller can resume on the reader's thread; if it then calls `Dispose`, `ReceiverThread.Join()` waits for itself for ever. Seen in S1 (a test hung in `Dispose`). Risk for any caller without a synchronisation context. | fault — fixed in S3 |
-| RX.3 | `AnvizStream.ReceiverThreadFunc` (pong) | The pong is written from the reader without the command lock, so it can interleave its bytes with a command being written at the same moment. | fault — fixed in S3 |
-| RX.4 | `AnvizManager.GetDevice` | When the first command at connect (0x04 or 0x48) fails, the new `AnvizDevice` is not disposed: its socket and reader stay open. | fault — fixed in S3 |
-| RX.5 | `AnvizDevice.GetEmployeesData` | `catch (Exception) { }` around each user: a record that fails to read, or an exception from the caller's `EmployeesDataGet` handler, silently leaves that user out. | fault — fixed in S3 |
-| RX.6 | `UserInfo.ToArray`, Unicode record (0x73 B, the M7) | The name is copied in whole. The name field is 20 bytes (10 Unicode characters); a longer name runs into department, group, mode and the FP-state bytes (the first three are written again afterwards, the FP-state bytes keep name bytes); over 14 characters it throws `ArgumentException`. The record layout does not change (D8): S3 only stops a name longer than its field from writing past it, with the same guard as RX.13. | fault — fixed in S3 |
-| RX.13 | `UserInfo.ToArray`, ANSI record (0x73 A, the M5) | The same as RX.6 in the 10-byte name field (10 ANSI characters): a longer name runs into department, group, mode and the FP-state bytes; over 18 characters it throws. The layout does not change (D8): the same S3 guard as RX.6. | fault — fixed in S3 |
+| RX.1 | `AnvizStream.ReceiverThreadFunc` | The reader is an `async void` method started on a `Thread`. The thread ends at its first `await`; the rest runs on the thread pool, where any exception nothing catches ends the process: a failed pong write, an exception from a caller's `ReceivedPacket` / `DevicePing` / `ReceivedRecord` / `DeviceError` handler, or a short 0xDF record. Now: the reader is a `Task`; whatever fails in it is raised as `DeviceError`, the connection closes and the waiting call gets `DeviceConnectionLostException`. Test: `FrameTests.RX1_ExceptionInTheReader_IsDeviceError_AndEndsTheConnection`. | fixed (S3, `5933f87`) |
+| RX.2 | `AnvizStream.SendCommand` / `Dispose` | The answer's `TaskCompletionSource` has no `RunContinuationsAsynchronously`, so the caller can resume on the reader's thread; if it then calls `Dispose`, `ReceiverThread.Join()` waits for itself for ever. Seen in S1 (a test hung in `Dispose`). Risk for any caller without a synchronisation context. Now: the answer's `TaskCompletionSource` runs continuations asynchronously, and `Dispose` closes the socket without waiting for the reader. Test: `FrameTests.RX2_DisposeWhereTheConnectCompletes_NeverHangs` (server mode: pings already waiting keep the reader on its first thread, as in S1). | fixed (S3, `fbd4e64`) |
+| RX.3 | `AnvizStream.ReceiverThreadFunc` (pong) | The pong is written from the reader without the command lock, so it can interleave its bytes with a command being written at the same moment. Now: commands and the pong are written under one write lock, held for the write only. Test (a guard: the interleaving cannot be made to happen on the fake): `FrameTests.RX3_PingsWhileCommandsAreWritten_EveryFrameArrivesWhole`. | fixed (S3, `00433a5`) |
+| RX.4 | `AnvizManager.GetDevice` | When the first command at connect (0x04 or 0x48) fails, the new `AnvizDevice` is not disposed: its socket and reader stay open. Now: the device is disposed, then the exception goes on to the caller. Test: `FrameTests.RX4_FirstCommandAtConnectFails_TheConnectionIsClosed`. | fixed (S3, `67711be`) |
+| RX.5 | `AnvizDevice.GetEmployeesData` | `catch (Exception) { }` around each user: a record that fails to read, or an exception from the caller's `EmployeesDataGet` handler, silently leaves that user out. Now: the other users are still read (Chronos's behaviour); each skipped user is logged at Error level and raised as `DeviceError` with its exception. Test: `FrameTests.RX5_UserTheReadFailsOn_IsSkipped_AndRaisedAsDeviceError`. | fixed (S3, `35d8a08`) |
+| RX.6 | `UserInfo.ToArray`, Unicode record (0x73 B, the M7) | The name is copied in whole. The name field is 20 bytes (10 Unicode characters); a longer name runs into department, group, mode and the FP-state bytes (the first three are written again afterwards, the FP-state bytes keep name bytes); over 14 characters it throws `ArgumentException`. The record layout does not change (D8): S3 only stops a name longer than its field from writing past it, with the same guard as RX.13. Now: the name is cut to its 20 bytes. Test: `FrameTests.RX6_RX13_NameLongerThanItsField_IsCut_AndLeavesTheOtherFields(40)`. | fixed (S3, `35e915d`) |
+| RX.13 | `UserInfo.ToArray`, ANSI record (0x73 A, the M5) | The same as RX.6 in the 10-byte name field (10 ANSI characters): a longer name runs into department, group, mode and the FP-state bytes; over 18 characters it throws. The layout does not change (D8): the same S3 guard as RX.6. Now: the name is cut to its 10 bytes. Test: `FrameTests.RX6_RX13_NameLongerThanItsField_IsCut_AndLeavesTheOtherFields(30)`. | fixed (S3, `35e915d`) |
 | RX.7 | `AnvizStream.SendCommand` | Each command starts a 10-second `Task.Delay` that is never cancelled: one live timer per command until it runs out. | fault — fixed in S4 |
 | RX.8 | `SetEmployeesDataUnicode(List)` / `SetEmployeesDataAnsi(List)` | Empty the caller's list (`users.RemoveRange`). Pinned by `SetEmployeesData_SendsRecords_Today`. Changing it changes the public behaviour. | noted — no change (D3) |
 | RX.9 | `Response.FromStream` | A new 16,000-byte buffer for every frame; a LEN above about 15,990 throws `IndexOutOfRangeException`. | fault — fixed in S4 |
