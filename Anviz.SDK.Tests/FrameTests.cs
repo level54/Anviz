@@ -200,6 +200,26 @@ public class FrameTests
         }
     }
 
+    [Fact]
+    public async Task RX1_ExceptionInTheReader_IsDeviceError_AndEndsTheConnection()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        var errors = new List<Exception>();
+        device.DeviceError += (_, e) => errors.Add(e);
+        var failure = new InvalidOperationException("The DevicePing handler failed.");
+        device.DevicePing += (_, _) => throw failure;
+        // The device pings instead of answering 0x3C: the handler throws on the reader while the call waits.
+        fake.AnswerNext(GetRecordInformation, _ => new Frame(fake.DeviceId, 0x7F, null, []).ToBytes());
+
+        var lost = await Assert.ThrowsAsync<DeviceConnectionLostException>(device.GetDownloadInformation);
+
+        Assert.Equal("Device connection lost.", lost.Message); // not the 10-second timeout
+        Assert.Same(failure, Assert.Single(errors));
+        await fake.ClientClosed.WaitAsync(Wait, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<DeviceConnectionLostException>(device.GetDownloadInformation);
+    }
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
