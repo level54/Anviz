@@ -1,6 +1,7 @@
 ## v2.0.17 (unreleased)
 CHR27-1 (review against the protocol document, refactor, tested on the M7):
 * S1 `Anviz.SDK.Tests`: a fake device that checks every frame against the protocol document; today's behaviour of the calls Chronos makes pinned (`_Today` where the code differs from the document); first timings
+* S2 `Docs/anviz_sdk_review_CHR27-1.md`: every command and answer field checked against the protocol document (181 rows, row ids R<code>.<n>); fake-device tests for every other command, the real-time record and the "new records" request
 
 ## v2.0.16
 FEATURES:
