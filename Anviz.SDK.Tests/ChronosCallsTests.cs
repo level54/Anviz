@@ -269,7 +269,7 @@ public class ChronosCallsTests
     }
 
     [Fact]
-    public async Task GetFingerprintTemplate_NoUser_ThrowsAndClosesTheConnection_Today()
+    public async Task GetFingerprintTemplate_NoUser_Throws_AndTheConnectionStays()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         using var device = await fake.ConnectAsync();
@@ -277,9 +277,8 @@ public class ChronosCallsTests
         var error = await Assert.ThrowsAsync<AnvizException>(() => device.GetFingerprintTemplate(7, Finger.RightThumb));
 
         Assert.Equal(AnvizReturnCode.NoUser, error.ReturnCode);
-        // The document's error answer is 11 bytes (LEN 0, then CRC). Today the SDK stops reading after RET, so the CRC
-        // is left as the start of its next frame, and it closes the connection.
-        await fake.ClientClosed.WaitAsync(Wait, TestContext.Current.CancellationToken);
+        // RF.10 / R44.5: the error answer is read to its end (LEN 0, then CRC), so the next command still works.
+        Assert.Equal("M7A+-N", await device.GetDeviceTypeCode());
     }
 
     [Fact]
@@ -351,12 +350,13 @@ public class ChronosCallsTests
 
         var error = await Assert.ThrowsAsync<AnvizException>(device.GetDeviceTypeCode);
 
-        // The answer code (0xBC) names the command the error is for; today any error answer fails the waiting call. Its
-        // CRC is then read as a frame header: DeviceError, and the SDK closes the connection.
+        // RF.11: the answer code (0xBC) names the command the error is for; today any error answer fails the waiting
+        // call. RF.10: the error answer is read to its end, so the connection stays.
         Assert.Equal(AnvizReturnCode.Fail, error.ReturnCode);
-        await fake.ClientClosed.WaitAsync(Wait, TestContext.Current.CancellationToken);
-        Assert.Empty(packets);
-        Assert.Equal("Invalid header", Assert.Single(errors).Message);
+        Assert.Equal("M7A+-N", await device.GetDeviceTypeCode());
+        // The stale 0xC8 answer may reach the second call or ReceivedPacket; the error answer never does.
+        Assert.DoesNotContain(packets, p => p.ResponseCode == GetRecordInformation + 0x80);
+        Assert.Empty(errors);
     }
 
     [Fact]

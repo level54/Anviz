@@ -36,19 +36,10 @@ namespace Anviz.SDK.Responses
 
         internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct)
         {
-            var base_offset = 6;
             var data = new byte[16000]; //for facepass7 template size is 15360
             try
             {
-                var amount = await stream.ReadAsync(data, 0, base_offset, ct);
-                if (amount == 0)
-                {
-                    return null;
-                }
-                if (amount != base_offset)
-                {
-                    throw new Exception("Partial packet read");
-                }
+                await ReadAsyncContinuously(stream, data, 0, 6, ct);
             }
             catch (Exception)
             {
@@ -63,31 +54,14 @@ namespace Anviz.SDK.Responses
             var CH = Bytes.Split(data, 1, 4);
             var ACK = data[5];
 
-            if (ACK < 0x80)
-            {
-                if (await stream.ReadAsync(data, base_offset, 2, ct) != 2)
-                {
-                    throw new Exception("Partial packet read");
-                }
-                base_offset += 2;
-            }
-            else
-            {
-                if (await stream.ReadAsync(data, base_offset, 3, ct) != 3)
-                {
-                    throw new Exception("Partial packet read");
-                }
-                var RET = (RetVal)data[6];
-                if (RET != RetVal.SUCCESS)
-                {
-                    throw new AnvizException((AnvizReturnCode)data[6]);
-                }
-                base_offset += 3;
-            }
-            var LEN = (int)Bytes.Read(Bytes.Split(data, 7, 2));
-            var P_LEN = LEN + 2;
+            // A frame the device starts (code below 0x80) has no RET: LEN is bytes 6-7. An answer has RET at byte 6
+            // and LEN at bytes 7-8.
+            var base_offset = ACK < 0x80 ? 8 : 9;
+            await ReadAsyncContinuously(stream, data, 6, base_offset - 6, ct);
+            var LEN = (int)Bytes.Read(Bytes.Split(data, base_offset - 2, 2));
 
-            await ReadAsyncContinuously(stream, data, base_offset, P_LEN, ct);
+            // Read the frame to its end (an error answer too: LEN 0, then CRC) so the next frame starts in step.
+            await ReadAsyncContinuously(stream, data, base_offset, LEN + 2, ct);
 
             var PacketData = Bytes.Split(data, base_offset, LEN);
             var CRC = Bytes.Split(data, LEN + base_offset, 2);
@@ -96,6 +70,11 @@ namespace Anviz.SDK.Responses
             if (ComputedCRC != ExpectedCRC)
             {
                 throw new Exception("Invalid CRC");
+            }
+
+            if (ACK >= 0x80 && (RetVal)data[6] != RetVal.SUCCESS)
+            {
+                throw new AnvizException((AnvizReturnCode)data[6]);
             }
 
             return new Response(PacketData, Bytes.Read(CH), ACK);
