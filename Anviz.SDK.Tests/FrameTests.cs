@@ -213,7 +213,7 @@ public class FrameTests
             var answered = AnswerTypeCodeAsync(stream, ct);
 
             // The caller goes on where the SDK completes the connect, and disposes there at once.
-            var acceptAndDispose = Task.Run(async () => (await manager.Accept()).Dispose());
+            var acceptAndDispose = Task.Run(async () => (await manager.Accept()).Dispose(), ct);
 
             await acceptAndDispose.WaitAsync(TimeSpan.FromSeconds(10), ct);
             await answered;
@@ -268,14 +268,14 @@ public class FrameTests
     }
 
     [Fact]
-    public Task StalledWrite_TheCallEndsAtTheTimeout_AndTheConnectionCloses() => WithStalledWrites(async device =>
+    public Task StalledWrite_TheCallEndsAtTheTimeout_AndTheConnectionCloses() => WithStalledWrites(async (device, _) =>
     {
         await Assert.ThrowsAsync<DeviceConnectionLostException>(() =>
             device.GetDownloadInformation().WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken));
     });
 
     [Fact]
-    public Task CloseWhileTheCallWaitsToWrite_TheCallerGetsDeviceConnectionLost() => WithStalledWrites(async device =>
+    public Task CloseWhileTheCallWaitsToWrite_TheCallerGetsDeviceConnectionLost() => WithStalledWrites(async (device, _) =>
     {
         // The call is past its closed checks, waiting for the write lock the stalled pong holds, when the connection closes.
         var call = device.GetDownloadInformation();
@@ -283,6 +283,34 @@ public class FrameTests
         device.Dispose();
 
         await Assert.ThrowsAsync<DeviceConnectionLostException>(() => call.WaitAsync(Wait, TestContext.Current.CancellationToken));
+    });
+
+    [Fact]
+    public Task StalledPongWithNoCall_EndsAtTheTimeout_AsDeviceError() => WithStalledWrites(async (device, _) =>
+    {
+        // No command runs: only the pong's own limit can end the stalled write and free the reader.
+        var error = new TaskCompletionSource<Exception>();
+        device.DeviceError += (_, e) => error.TrySetResult(e);
+
+        Assert.IsType<TimeoutException>(await error.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<DeviceConnectionLostException>(device.GetDownloadInformation);
+    });
+
+    [Fact]
+    public Task WriteFailsOnAResetConnection_TheCallerGetsDeviceConnectionLost() => WithStalledWrites(async (device, deviceSide) =>
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // The call waits for the write lock the stalled pong holds. The device resets the connection: the pong write
+        // fails, and the reader's DeviceError handler holds it before it closes the connection, so the call writes on
+        // the reset socket while the connection is not yet marked closed.
+        var call = device.GetDownloadInformation();
+        device.DeviceError += (_, _) => ((Task)call).ContinueWith(_ => { }).Wait(Wait);
+        await Task.Delay(200, ct);
+        deviceSide.Client.LingerState = new LingerOption(true, 0);
+        deviceSide.Client.Close();
+
+        var lost = await Assert.ThrowsAsync<DeviceConnectionLostException>(() => call.WaitAsync(Wait, ct));
+        Assert.IsAssignableFrom<IOException>(lost.InnerException);
     });
 
     private static int FreePort()
@@ -297,9 +325,9 @@ public class FrameTests
     /// <summary>
     /// Runs <paramref name="test"/> on a connection whose writes are stalled. The test is the device: it answers the 0x48
     /// at connect, then pings without ever reading, so the SDK's pongs fill the socket and its pong write stalls under
-    /// the write lock. Afterwards the connection must be closed.
+    /// the write lock. Afterwards the connection must be closed (or the test closed the device side itself).
     /// </summary>
-    private static async Task WithStalledWrites(Func<AnvizDevice, Task> test)
+    private static async Task WithStalledWrites(Func<AnvizDevice, TcpClient, Task> test)
     {
         var ct = TestContext.Current.CancellationToken;
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -325,9 +353,10 @@ public class FrameTests
             // The SDK stopped reading the pings: its reader is stuck in the pong write.
             while (Environment.TickCount64 - Volatile.Read(ref lastWrite) < 500) await Task.Delay(50, ct);
 
-            await test(device);
+            await test(device, deviceSide);
 
-            await Assert.ThrowsAnyAsync<IOException>(() => flood.WaitAsync(Wait, ct));
+            var end = await Xunit.Record.ExceptionAsync(() => flood.WaitAsync(Wait, ct));
+            Assert.True(end is IOException or ObjectDisposedException, $"The device side is still open: {end}");
         }
         finally
         {

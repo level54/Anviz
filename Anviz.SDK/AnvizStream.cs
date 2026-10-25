@@ -68,7 +68,14 @@ namespace Anviz.SDK
                     }
                     if (response.ResponseCode == 0x7F)
                     {
-                        await WriteAsync(new PongCommand(response.DeviceID));
+                        // RX.14: a pong write stalled with no command running would hold the reader for ever; at the
+                        // limit it is raised as DeviceError and the connection closes (it is gone).
+                        var pong = WriteAsync(new PongCommand(response.DeviceID));
+                        if (!pong.IsCompleted && !await WrittenBefore(pong, Task.Delay(DEVICE_TIMEOUT)))
+                        {
+                            throw new TimeoutException("Device timeout writing the pong.");
+                        }
+                        await pong;
                         ReceivedPacket?.Invoke(this, response);
                     }
                     else if (TakePending(response.ResponseCode, frameStart) is PendingCall call)
@@ -153,14 +160,11 @@ namespace Anviz.SDK
                 // One limit for the write and the answer: a write stalled in the socket, or behind a stalled pong, ends
                 // the connection too, so it cannot hold the pong and the reader for ever.
                 var timeout = Task.Delay(DEVICE_TIMEOUT);
-                var write = WriteAsync(cmd);
-                if (await Task.WhenAny(write, timeout) != write)
+                if (!await WrittenBefore(WriteAsync(cmd), timeout))
                 {
-                    _ = write.ContinueWith(t => t.Exception, TaskContinuationOptions.OnlyOnFaulted); // fails once closed
                     Close();
                     throw new DeviceConnectionLostException("Device timeout waiting response.");
                 }
-                await write;
                 if (await Task.WhenAny(call.Answer.Task, timeout) != call.Answer.Task)
                 {
                     Close();
@@ -173,9 +177,11 @@ namespace Anviz.SDK
                 }
                 return result;
             }
-            catch (Exception ex) when (closed && (ex is ObjectDisposedException || ex is IOException))
+            catch (Exception ex) when (ex is IOException || (closed && ex is ObjectDisposedException))
             {
-                // A Close between the closed checks and the write: the socket is gone, as for any lost connection.
+                // The write failed: a Close between the closed checks and the write, or the device reset the connection
+                // before the reader saw it. The socket is gone, as for any lost connection.
+                Close();
                 throw new DeviceConnectionLostException("Device connection lost.", ex);
             }
             finally
@@ -200,6 +206,22 @@ namespace Anviz.SDK
             {
                 _writeLock.Release();
             }
+        }
+
+        /// <summary>
+        /// RX.14: an async socket write has no timeout of its own (WriteTimeout covers synchronous writes only). False when
+        /// <paramref name="write"/> has not ended by <paramref name="timeout"/>; the write left behind fails once the
+        /// connection closes, and that failure is observed here.
+        /// </summary>
+        private static async Task<bool> WrittenBefore(Task write, Task timeout)
+        {
+            if (await Task.WhenAny(write, timeout) != write)
+            {
+                _ = write.ContinueWith(t => t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                return false;
+            }
+            await write;
+            return true;
         }
 
         public void Dispose()
