@@ -38,12 +38,13 @@ namespace Anviz.SDK.Responses
             ReturnCode = ret;
         }
 
-        internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct)
+        /// <param name="bytesRead">Told the size of every read from the stream (the reader counts the bytes it took).</param>
+        internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct, Action<int> bytesRead = null)
         {
             var data = new byte[16000]; //for facepass7 template size is 15360
             try
             {
-                await ReadAsyncContinuously(stream, data, 0, 6, ct);
+                await ReadAsyncContinuously(stream, data, 0, 6, ct, bytesRead);
             }
             catch (Exception)
             {
@@ -61,11 +62,11 @@ namespace Anviz.SDK.Responses
             // A frame the device starts (code below 0x80) has no RET: LEN is bytes 6-7. An answer has RET at byte 6
             // and LEN at bytes 7-8.
             var base_offset = ACK < 0x80 ? 8 : 9;
-            await ReadAsyncContinuously(stream, data, 6, base_offset - 6, ct);
+            await ReadAsyncContinuously(stream, data, 6, base_offset - 6, ct, bytesRead);
             var LEN = (int)Bytes.Read(Bytes.Split(data, base_offset - 2, 2));
 
             // Read the frame to its end (an error answer too: LEN 0, then CRC) so the next frame starts in step.
-            await ReadAsyncContinuously(stream, data, base_offset, LEN + 2, ct);
+            await ReadAsyncContinuously(stream, data, base_offset, LEN + 2, ct, bytesRead);
 
             var PacketData = Bytes.Split(data, base_offset, LEN);
             var CRC = Bytes.Split(data, LEN + base_offset, 2);
@@ -81,7 +82,7 @@ namespace Anviz.SDK.Responses
             return new Response(PacketData, Bytes.Read(CH), ACK, ret);
         }
 
-        private static async Task ReadAsyncContinuously(NetworkStream stream, byte[] data, int offset, int size, CancellationToken ct)
+        private static async Task ReadAsyncContinuously(NetworkStream stream, byte[] data, int offset, int size, CancellationToken ct, Action<int> bytesRead)
         {
             int readed = 0;
             do
@@ -91,6 +92,7 @@ namespace Anviz.SDK.Responses
                 {
                     throw new Exception("Partial packet read");
                 }
+                bytesRead?.Invoke(amount);
                 readed += amount;
             } while (readed < size);
         }

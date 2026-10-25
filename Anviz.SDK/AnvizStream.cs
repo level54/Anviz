@@ -17,8 +17,22 @@ namespace Anviz.SDK
         private readonly Thread ReceiverThread;
         private readonly CancellationTokenSource CancellationTokenSource;
 
-        private byte ResponseCode = 0;
-        private TaskCompletionSource<Response> taskEmitter;
+        /// <summary>The call waiting for an answer: its answer code, and the bytes received before its command was written.</summary>
+        private sealed class PendingCall
+        {
+            public PendingCall(byte code, long sentAt)
+            {
+                Code = code;
+                SentAt = sentAt;
+            }
+
+            public byte Code { get; }
+            public long SentAt { get; }
+            public TaskCompletionSource<Response> Answer { get; } = new TaskCompletionSource<Response>();
+        }
+
+        private PendingCall pending;
+        private long received; // bytes the reader has taken from the stream
         private readonly SemaphoreSlim _commandLock = new SemaphoreSlim(1, 1);
 
         public event EventHandler<Response> ReceivedPacket;
@@ -27,7 +41,6 @@ namespace Anviz.SDK
         public AnvizStream(TcpClient socket)
         {
             CancellationTokenSource = new CancellationTokenSource();
-            taskEmitter = new TaskCompletionSource<Response>();
             DeviceSocket = socket;
             DeviceStream = socket.GetStream();
             DeviceSocket.ReceiveTimeout = DEVICE_TIMEOUT;
@@ -47,9 +60,10 @@ namespace Anviz.SDK
             while (DeviceSocket.Connected && !CancellationTokenSource.IsCancellationRequested)
             {
                 Response response = null;
+                var frameStart = Interlocked.Read(ref received);
                 try
                 {
-                    response = await Response.FromStream(DeviceStream, CancellationTokenSource.Token);
+                    response = await Response.FromStream(DeviceStream, CancellationTokenSource.Token, n => Interlocked.Add(ref received, n));
                 }
                 catch (Exception ex)
                 {
@@ -58,7 +72,7 @@ namespace Anviz.SDK
                 if (response == null)
                 {
                     DeviceSocket.Close();
-                    taskEmitter.TrySetResult(null);
+                    Interlocked.Exchange(ref pending, null)?.Answer.TrySetResult(null);
                     break;
                 }
                 if (response.ResponseCode == 0x7F)
@@ -66,13 +80,12 @@ namespace Anviz.SDK
                     await new PongCommand(response.DeviceID).Send(DeviceStream);
                     ReceivedPacket?.Invoke(this, response);
                 }
-                else if (response.ResponseCode == ResponseCode)
+                else if (TakePending(response.ResponseCode, frameStart) is PendingCall call)
                 {
-                    ResponseCode = 0;
                     if (response.ReturnCode == 0)
-                        taskEmitter.TrySetResult(response);
+                        call.Answer.TrySetResult(response);
                     else
-                        taskEmitter.TrySetException(new AnvizException((AnvizReturnCode)response.ReturnCode));
+                        call.Answer.TrySetException(new AnvizException((AnvizReturnCode)response.ReturnCode));
                 }
                 else if (response.ReturnCode != 0)
                 {
@@ -86,6 +99,17 @@ namespace Anviz.SDK
             }
         }
 
+        /// <summary>
+        /// The waiting call, taken, when this frame is its answer: the same answer code, and the frame's first byte
+        /// came after the command was written (RF.17: a repeat of an earlier answer is not the next call's).
+        /// </summary>
+        private PendingCall TakePending(byte code, long frameStart)
+        {
+            var call = Volatile.Read(ref pending);
+            return call != null && call.Code == code && frameStart >= call.SentAt
+                && Interlocked.CompareExchange(ref pending, null, call) == call ? call : null;
+        }
+
         public async Task<Response> SendCommand(Command cmd)
         {
             if (!DeviceSocket.Connected)
@@ -93,12 +117,18 @@ namespace Anviz.SDK
                 throw new DeviceConnectionLostException();
             }
             await _commandLock.WaitAsync();
+            PendingCall call = null;
             try
             {
-                taskEmitter = new TaskCompletionSource<Response>();
-                ResponseCode = cmd.ResponseCode;
+                // Bytes already received, or waiting in the socket, before the command is written belong to earlier
+                // frames. Available is read first, so a byte the reader takes meanwhile is counted, not missed.
+                // ponytail: a repeat still on the wire when the command is written is taken as its answer; the
+                // protocol has no sequence number to tell them apart.
+                var available = DeviceSocket.Available;
+                call = new PendingCall(cmd.ResponseCode, available + Interlocked.Read(ref received));
+                Interlocked.Exchange(ref pending, call);
                 await cmd.Send(DeviceStream);
-                if (await Task.WhenAny(taskEmitter.Task, Task.Delay(DEVICE_TIMEOUT)) != taskEmitter.Task)
+                if (await Task.WhenAny(call.Answer.Task, Task.Delay(DEVICE_TIMEOUT)) != call.Answer.Task)
                 {
                     if (DeviceSocket.Connected)
                     {
@@ -106,7 +136,7 @@ namespace Anviz.SDK
                     }
                     throw new DeviceConnectionLostException("Device timeout waiting response.");
                 }
-                var result = await taskEmitter.Task;
+                var result = await call.Answer.Task;
                 if (result == null)
                 {
                     throw new DeviceConnectionLostException();
@@ -115,6 +145,7 @@ namespace Anviz.SDK
             }
             finally
             {
+                Interlocked.CompareExchange(ref pending, null, call);
                 _commandLock.Release();
             }
         }
