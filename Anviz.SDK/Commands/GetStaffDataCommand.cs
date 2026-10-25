@@ -65,9 +65,9 @@ namespace Anviz.SDK
                     }
                     catch (Exception ex)
                     {
-                        // The other users are still read; this one is reported, never dropped silently.
+                        // RX.5: the other users are still read; this one is logged, never dropped silently. Not a
+                        // DeviceError: that tells the caller the connection is gone.
                         log.Error($"GetEmployeesData on device {DeviceId}: user {currentCount} of {totalCount} skipped.", ex);
-                        DeviceError?.Invoke(this, ex);
                     }
                 }
                 if (cancel)

@@ -30,7 +30,7 @@ namespace Anviz.SDK.Responses
         /// <summary>RET of an answer (0 = success); 0 for a frame the device starts, which has no RET.</summary>
         internal byte ReturnCode { get; }
 
-        internal Response(byte[] data, ulong deviceId, byte ACK, byte ret = 0)
+        internal Response(byte[] data, ulong deviceId, byte ACK, byte ret)
         {
             DATA = data;
             DeviceID = deviceId;
@@ -39,7 +39,7 @@ namespace Anviz.SDK.Responses
         }
 
         /// <param name="bytesRead">Told the size of every read from the stream (the reader counts the bytes it took).</param>
-        internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct, Action<int> bytesRead = null)
+        internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct, Action<int> bytesRead)
         {
             var data = new byte[16000]; //for facepass7 template size is 15360
             try

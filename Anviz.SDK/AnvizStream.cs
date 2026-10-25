@@ -2,6 +2,7 @@
 using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
 using System;
+using System.IO;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -77,13 +78,10 @@ namespace Anviz.SDK
                         else
                             call.Answer.TrySetException(new AnvizException((AnvizReturnCode)response.ReturnCode));
                     }
-                    else if (response.ReturnCode != 0)
-                    {
-                        // RF.11: an error answer for a code nobody waits for is not the waiting call's; the connection stays.
-                        DeviceError?.Invoke(this, new AnvizException((AnvizReturnCode)response.ReturnCode));
-                    }
                     else
                     {
+                        // RF.11, RF.17: an answer nobody waits for, an error answer too, is not the waiting call's; it is
+                        // raised as a packet and the connection stays (DeviceError means the connection is gone).
                         ReceivedPacket?.Invoke(this, response);
                     }
                 }
@@ -140,19 +138,30 @@ namespace Anviz.SDK
                 {
                     throw new DeviceConnectionLostException();
                 }
-                // Bytes already received, or waiting in the socket, before the command is written belong to earlier
-                // frames. Available is read first, so a byte the reader takes meanwhile is counted, not missed.
-                // ponytail: a repeat still on the wire when the command is written is taken as its answer; the
-                // protocol has no sequence number to tell them apart.
-                var available = DeviceSocket.Available;
-                call = new PendingCall(cmd.ResponseCode, available + Interlocked.Read(ref received));
+                // RF.17: bytes the reader has counted, or waiting in the socket, before the command is written belong to
+                // earlier frames. The count is read first, so a byte the reader takes in between is never counted twice
+                // (twice would make the real answer look earlier than the command, and the call would time out).
+                // ponytail: a repeat whose bytes the reader has read but not yet counted, or that is still on the wire,
+                // when the command is written is taken as its answer; the protocol has no sequence number to tell them apart.
+                var counted = Interlocked.Read(ref received);
+                call = new PendingCall(cmd.ResponseCode, counted + DeviceSocket.Available);
                 Interlocked.Exchange(ref pending, call);
                 if (closed) // closed before the call was armed: Close did not see it
                 {
                     throw new DeviceConnectionLostException();
                 }
-                await WriteAsync(cmd);
-                if (await Task.WhenAny(call.Answer.Task, Task.Delay(DEVICE_TIMEOUT)) != call.Answer.Task)
+                // One limit for the write and the answer: a write stalled in the socket, or behind a stalled pong, ends
+                // the connection too, so it cannot hold the pong and the reader for ever.
+                var timeout = Task.Delay(DEVICE_TIMEOUT);
+                var write = WriteAsync(cmd);
+                if (await Task.WhenAny(write, timeout) != write)
+                {
+                    _ = write.ContinueWith(t => t.Exception, TaskContinuationOptions.OnlyOnFaulted); // fails once closed
+                    Close();
+                    throw new DeviceConnectionLostException("Device timeout waiting response.");
+                }
+                await write;
+                if (await Task.WhenAny(call.Answer.Task, timeout) != call.Answer.Task)
                 {
                     Close();
                     throw new DeviceConnectionLostException("Device timeout waiting response.");
@@ -163,6 +172,11 @@ namespace Anviz.SDK
                     throw new DeviceConnectionLostException();
                 }
                 return result;
+            }
+            catch (Exception ex) when (closed && (ex is ObjectDisposedException || ex is IOException))
+            {
+                // A Close between the closed checks and the write: the socket is gone, as for any lost connection.
+                throw new DeviceConnectionLostException("Device connection lost.", ex);
             }
             finally
             {

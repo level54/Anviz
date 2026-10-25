@@ -3,6 +3,10 @@ using System.Net.Sockets;
 using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
 using Anviz.SDK.Tests.Fake;
+using log4net;
+using log4net.Appender;
+using log4net.Core;
+using log4net.Repository.Hierarchy;
 using static Anviz.SDK.Tests.Fake.CommandCode;
 using static Anviz.SDK.Tests.TestHelpers;
 
@@ -84,6 +88,7 @@ public class FrameTests
         Assert.Equal(0x5F, packet.ResponseCode);
         Assert.Equal(data, packet.DATA);
     }
+
     [Theory]
     [InlineData(40)]
     [InlineData(30)]
@@ -103,21 +108,37 @@ public class FrameTests
         Assert.Equal(new byte[] { 1, 1, 6, 0, 0 }, record[nameEnd..(nameEnd + 5)]);
         Assert.Equal("ABCDEFGHIJ", Assert.Single(fake.Users).Name);
     }
+
     [Fact]
-    public async Task RX5_UserTheReadFailsOn_IsSkipped_AndRaisedAsDeviceError()
+    public async Task RX5_UserTheReadFailsOn_IsSkipped_AndLogged_NotDeviceError()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         fake.Users.AddRange([new FakeUser(1, "A"), new FakeUser(2, "B"), new FakeUser(3, "C")]);
         using var device = await fake.ConnectAsync();
-        var errors = new List<Exception>();
-        device.DeviceError += (_, e) => errors.Add(e);
+        var deviceErrors = 0;
+        device.DeviceError += (_, _) => deviceErrors++;
         var failure = new InvalidOperationException("The handler failed on user 2.");
         device.EmployeesDataGet += (_, e) => { if (e.Employee.Id == 2) throw failure; };
+        var log = new MemoryAppender();
+        var logger = (Logger)LogManager.GetLogger(typeof(AnvizDevice)).Logger;
+        logger.Repository!.Configured = true;
+        logger.AddAppender(log);
+        try
+        {
+            var users = await device.GetEmployeesData();
 
-        var users = await device.GetEmployeesData();
-
-        Assert.Equal([1UL, 3UL], users.Select(u => u.Id));
-        Assert.Same(failure, Assert.Single(errors));
+            Assert.Equal([1UL, 3UL], users.Select(u => u.Id));
+        }
+        finally
+        {
+            logger.RemoveAppender(log);
+        }
+        // DeviceError means the connection is gone (Chronos disposes the device); a skipped user is only logged.
+        Assert.Equal(0, deviceErrors);
+        var logged = Assert.Single(log.GetEvents(), e => ReferenceEquals(e.ExceptionObject, failure));
+        Assert.Equal(Level.Error, logged.Level);
+        Assert.Contains("user 2 of 3", logged.RenderedMessage);
+        Assert.Equal(3UL, (await device.GetDownloadInformation()).UserAmount);
     }
 
     [Fact]
@@ -130,15 +151,16 @@ public class FrameTests
 
         await fake.ClientClosed.WaitAsync(Wait, TestContext.Current.CancellationToken);
     }
+
     [Fact]
-    public async Task RF11_ErrorAnswerForAnotherCode_IsDeviceError_AndTheWaitingCallGetsItsAnswer()
+    public async Task RF11_ErrorAnswerForAnotherCode_IsReceivedPacket_AndTheWaitingCallGetsItsAnswer()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         using var device = await fake.ConnectAsync();
         var packets = new List<Response>();
-        var errors = new List<Exception>();
+        var deviceErrors = 0;
         device.ReceivedPacket += (_, e) => packets.Add(e);
-        device.DeviceError += (_, e) => errors.Add(e);
+        device.DeviceError += (_, _) => deviceErrors++;
         // Before its answer to 0x48, the device sends an ACK_FAIL answer to 0x3C, which the SDK did not ask for: the
         // answer code (0xBC) names the command the error is for, so it is not the waiting call's.
         fake.AnswerNext(GetDeviceTypeCode, _ =>
@@ -149,8 +171,10 @@ public class FrameTests
 
         Assert.Equal("M7A+-N", await device.GetDeviceTypeCode());
 
-        Assert.Equal(AnvizReturnCode.Fail, Assert.IsType<AnvizException>(Assert.Single(errors)).ReturnCode);
-        Assert.Empty(packets);
+        // As a stray success answer (RF.17): a packet, not a DeviceError, which tells Chronos the connection is gone.
+        Assert.Equal(GetRecordInformation + 0x80, Assert.Single(packets).ResponseCode);
+        Assert.Equal(0, deviceErrors);
+        Assert.NotNull(await device.GetDownloadInformation());
     }
 
     [Fact]
@@ -243,6 +267,24 @@ public class FrameTests
         Assert.Equal(50, fake.Received.Count(f => f.Code == UploadStaff));
     }
 
+    [Fact]
+    public Task StalledWrite_TheCallEndsAtTheTimeout_AndTheConnectionCloses() => WithStalledWrites(async device =>
+    {
+        await Assert.ThrowsAsync<DeviceConnectionLostException>(() =>
+            device.GetDownloadInformation().WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken));
+    });
+
+    [Fact]
+    public Task CloseWhileTheCallWaitsToWrite_TheCallerGetsDeviceConnectionLost() => WithStalledWrites(async device =>
+    {
+        // The call is past its closed checks, waiting for the write lock the stalled pong holds, when the connection closes.
+        var call = device.GetDownloadInformation();
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        device.Dispose();
+
+        await Assert.ThrowsAsync<DeviceConnectionLostException>(() => call.WaitAsync(Wait, TestContext.Current.CancellationToken));
+    });
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -250,6 +292,47 @@ public class FrameTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="test"/> on a connection whose writes are stalled. The test is the device: it answers the 0x48
+    /// at connect, then pings without ever reading, so the SDK's pongs fill the socket and its pong write stalls under
+    /// the write lock. Afterwards the connection must be closed.
+    /// </summary>
+    private static async Task WithStalledWrites(Func<AnvizDevice, Task> test)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Server.ReceiveBufferSize = 1024;
+        listener.Start();
+        try
+        {
+            var connect = new AnvizManager().Connect("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
+            using var deviceSide = await listener.AcceptTcpClientAsync(ct);
+            var stream = deviceSide.GetStream();
+            await AnswerTypeCodeAsync(stream, ct);
+            using var device = await connect;
+            var pings = Enumerable.Repeat(new Frame(1, 0x7F, null, []).ToBytes(), 1000).SelectMany(b => b).ToArray();
+            var lastWrite = Environment.TickCount64;
+            var flood = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    await stream.WriteAsync(pings, ct);
+                    Volatile.Write(ref lastWrite, Environment.TickCount64);
+                }
+            }, ct);
+            // The SDK stopped reading the pings: its reader is stuck in the pong write.
+            while (Environment.TickCount64 - Volatile.Read(ref lastWrite) < 500) await Task.Delay(50, ct);
+
+            await test(device);
+
+            await Assert.ThrowsAnyAsync<IOException>(() => flood.WaitAsync(Wait, ct));
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     /// <summary>Reads the SDK's frames (pongs) until its 0x48, and answers it.</summary>
