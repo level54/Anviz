@@ -46,6 +46,7 @@ namespace Anviz.SDK
             CancellationTokenSource = new CancellationTokenSource();
             DeviceSocket = socket;
             DeviceStream = socket.GetStream();
+            DeviceSocket.NoDelay = true; // RX.11: each frame is one write; Nagle must not hold it (Connect and Accept both come here)
             DeviceSocket.ReceiveTimeout = DEVICE_TIMEOUT;
             DeviceSocket.SendTimeout = DEVICE_TIMEOUT;
             DeviceStream.WriteTimeout = DEVICE_TIMEOUT;
