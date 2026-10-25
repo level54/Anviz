@@ -117,4 +117,15 @@ public class FrameTests
         Assert.Equal([1UL, 3UL], users.Select(u => u.Id));
         Assert.Same(failure, Assert.Single(errors));
     }
+
+    [Fact]
+    public async Task RX4_FirstCommandAtConnectFails_TheConnectionIsClosed()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        fake.AnswerNext(GetDeviceTypeCode, _ => new Frame(fake.DeviceId, GetDeviceTypeCode + 0x80, FakeAnvizDevice.AckFail, []).ToBytes());
+
+        await Assert.ThrowsAsync<AnvizException>(() => new AnvizManager().Connect("127.0.0.1", fake.Port));
+
+        await fake.ClientClosed.WaitAsync(Wait, TestContext.Current.CancellationToken);
+    }
 }
