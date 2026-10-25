@@ -43,7 +43,7 @@ fails the test on any frame that breaks it. A test pinning today's code where it
 
 **`AnvizDevice`** — the public API surface for all device operations. Implemented as ~36 partial class files under `Anviz.SDK/Commands/`, one file per logical command group. Exposes events: `DevicePing`, `ReceivedPacket`, `ReceivedRecord`, `DeviceError`.
 
-**`AnvizStream`** (internal) — manages the raw TCP socket, runs a background receiver thread, and correlates request/response pairs using `TaskCompletionSource`. Response code = command code + `0x80`. Default timeout: 10 seconds.
+**`AnvizStream`** (internal) — owns the TCP socket. One reader task (`ReceiveAsync`, started with `Task.Run`) reads every frame; `SendCommand` runs one command at a time (`_commandLock`), writes under `_writeLock` (the reader's pong uses the same lock) and waits for the answer code (command + `0x80`) with one 10-second limit covering the write and the answer. A device error answer (RET not success) is read to the end and thrown as `AnvizException`; the connection stays open. An unreadable frame, a timeout or a failed write ends the connection (`DeviceConnectionLostException`). `DeviceError` fires only when the reader loses the connection — Chronos treats it as "connection gone" and reconnects, so never raise it for anything else.
 
 ### Protocol Layer
 
@@ -75,7 +75,7 @@ Response DTOs live in `Anviz.SDK/Responses/`: `UserInfo`, `Record`, `BasicSettin
 ## Key Conventions
 
 - **Partial classes for organization**: `AnvizDevice` is split into many files, one per command family. Add new device commands by adding a new partial class file and a corresponding `Command` subclass.
-- **Async via TaskCompletionSource**: All commands are async. `AnvizStream` holds a pending `TaskCompletionSource<Response>` keyed by response code and completes it when the background reader receives the matching response.
+- **Async via TaskCompletionSource**: each command waits on a `PendingCall` whose `TaskCompletionSource` runs continuations asynchronously (a caller never resumes on the reader, so `Dispose` cannot deadlock). Frames nobody waits for go to `ReceivedPacket`.
 - **Internal vs public**: Keep all `Command` subclasses and `AnvizStream` internal. Only `AnvizManager` and `AnvizDevice` are public.
 - **Logging**: `log4net` is the only dependency. Use it for debug/error logging consistent with existing calls.
 

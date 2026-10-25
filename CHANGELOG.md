@@ -2,6 +2,7 @@
 CHR27-1 (review against the protocol document, refactor, tested on the M7):
 * S1 `Anviz.SDK.Tests`: a fake device that checks every frame against the protocol document; today's behaviour of the calls Chronos makes pinned (`_Today` where the code differs from the document); first timings
 * S2 `Docs/anviz_sdk_review_CHR27-1.md`: every command and answer field checked against the protocol document (181 rows, row ids R<code>.<n>); fake-device tests for every other command, the real-time record and the "new records" request
+* S3 frame faults fixed: a device error answer is read whole and thrown as `AnvizException`, the connection stays; split frames read whole; device-sent frames read at the right length; Dispose can no longer hang; a stalled write times out; the pong no longer interleaves with a command; a skipped user is logged, not silently dropped; an over-long name is cut to its field
 
 ## v2.0.16
 FEATURES:
