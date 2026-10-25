@@ -51,6 +51,21 @@ public class FrameTests
         Assert.Equal(60, (await device.DownloadRecords()).Count);
     }
 
+    [Theory]
+    [InlineData(16_000)]
+    [InlineData(65_535)]
+    public async Task RX9_AnswerOfAnyLen_IsReadWhole(int len)
+    {
+        // RX.9: LEN is two bytes, so an answer may carry up to 65,535 data bytes (a FacePass 7 template is 15,360); the
+        // whole frame is read, and the connection stays in step for the next call.
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        fake.Templates[(5, 1)] = Enumerable.Range(0, len).Select(b => (byte)(b * 7)).ToArray();
+        using var device = await fake.ConnectAsync();
+
+        Assert.Equal(fake.Templates[(5, 1)], await device.GetFaceTemplate(5));
+        Assert.NotNull(await device.GetDownloadInformation());
+    }
+
     [Fact]
     public async Task BadCrc_EndsConnection()
     {
