@@ -112,16 +112,8 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
 
     public static Task<FakeAnvizDevice> StartAsync() => Task.FromResult(new FakeAnvizDevice());
 
-    /// <summary>
-    /// Connects the SDK. The yield moves the caller off the SDK's receiver thread: when the 0x48 answer is read before
-    /// that thread first waits, the caller's code runs on it, and a Dispose there joins the thread to itself and hangs.
-    /// </summary>
-    public async Task<AnvizDevice> ConnectAsync()
-    {
-        var device = await new AnvizManager().Connect("127.0.0.1", Port);
-        await Task.Yield();
-        return device;
-    }
+    /// <summary>Connects the SDK to this fake.</summary>
+    public Task<AnvizDevice> ConnectAsync() => new AnvizManager().Connect("127.0.0.1", Port);
 
     /// <summary>Completes when the SDK side closes a connection.</summary>
     public Task ClientClosed => clientClosed.Task;

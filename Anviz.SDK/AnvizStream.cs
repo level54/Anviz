@@ -28,7 +28,8 @@ namespace Anviz.SDK
 
             public byte Code { get; }
             public long SentAt { get; }
-            public TaskCompletionSource<Response> Answer { get; } = new TaskCompletionSource<Response>();
+            // RX.2: the caller never goes on on the reader, where a Dispose would wait for the reader itself.
+            public TaskCompletionSource<Response> Answer { get; } = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private PendingCall pending;
@@ -57,7 +58,7 @@ namespace Anviz.SDK
         private async void ReceiverThreadFunc()
         {
             using var _op = AnvizDevice.BeginOperation("DeviceReceiver");
-            while (DeviceSocket.Connected && !CancellationTokenSource.IsCancellationRequested)
+            while (!CancellationTokenSource.IsCancellationRequested)
             {
                 Response response = null;
                 var frameStart = Interlocked.Read(ref received);
@@ -67,7 +68,8 @@ namespace Anviz.SDK
                 }
                 catch (Exception ex)
                 {
-                    DeviceError?.Invoke(this, ex);
+                    if (!CancellationTokenSource.IsCancellationRequested) // not the read Dispose broke off
+                        DeviceError?.Invoke(this, ex);
                 }
                 if (response == null)
                 {
@@ -152,13 +154,12 @@ namespace Anviz.SDK
 
         public void Dispose()
         {
+            // RX.2: never waits for the reader, which may be the caller (an event handler); closing the socket ends its
+            // read. The token source and the lock stay undisposed: the reader or a waiting call may still touch them.
             CancellationTokenSource.Cancel();
-            ReceiverThread.Join();
             DeviceStream.Close();
-            DeviceStream.Dispose();
             DeviceSocket.Close();
-            CancellationTokenSource.Dispose();
-            _commandLock.Dispose();
+            Interlocked.Exchange(ref pending, null)?.Answer.TrySetResult(null);
         }
     }
 }
