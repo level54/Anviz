@@ -36,6 +36,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     private readonly ConcurrentDictionary<byte, Func<Frame, byte[]>> nextRawAnswers = new();
     private int[]? nextCuts;
     private readonly TaskCompletionSource clientClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private NetworkStream? latestStream;
 
     /// <summary>The answer to each command code, from the document's layout for it.</summary>
     private readonly Dictionary<byte, Func<Frame, Frame>> answers;
@@ -59,6 +60,35 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
             [EnrollFingerprint] = EnrollFingerprintAnswer,
             [DownloadStaff] = DownloadStaffAnswer,
             [UploadStaff] = UploadStaffAnswer,
+            [GetBasicSettings] = command => Answer(command, BasicSettings),
+            // 2. Set basic settings: the 10 bytes are the get answer's bytes 9-17 (password to language flag) and a
+            // reserved byte; no data in the answer. (The document's "0xFF = leave this item" is not modelled.)
+            [SetBasicSettings] = command => { command.Data[..9].CopyTo(BasicSettings, 8); return Answer(command, []); },
+            [GetAdvancedSettings] = command => Answer(command, AdvancedSettings),
+            // 4. Set advanced settings: the get answer's 15-byte layout; no data in the answer.
+            [SetAdvancedSettings] = command => { command.Data.CopyTo(AdvancedSettings, 0); return Answer(command, []); },
+            [GetDateTime] = command => Answer(command, DateTimeBytes(Clock)),
+            [GetTcpParameters] = command => Answer(command, TcpParameters),
+            // 8. Set TCP/IP parameters: the get answer's 27-byte layout; no data in the answer.
+            [SetTcpParameters] = command => { command.Data.CopyTo(TcpParameters, 0); return Answer(command, []); },
+            [UploadRecord] = UploadRecordAnswer,
+            // 16. Get the device id "which we set in device": 4 bytes.
+            [GetDeviceId] = command => Answer(command, BigEndian(DeviceId, 4)),
+            [SetDeviceId] = SetDeviceIdAnswer,
+            // 25. Initialize System: factory settings back; no data either way (users and records stay).
+            [InitializeSystem] = command => Answer(command, []),
+            [GetTimeZone] = GetTimeZoneAnswer,
+            [SetTimeZone] = SetTimeZoneAnswer,
+            [GetBells] = command => Answer(command, Bells),
+            [SetBell] = SetBellAnswer,
+            // 40. Output signal to open lock without verifying user: no data either way.
+            [OpenLock] = command => Answer(command, []),
+            // 61. Get device serial number: 16 bytes (the document does not say how they are encoded: ASCII, zero-padded).
+            [GetSerialNumber] = command => Answer(command, Encoding.ASCII.GetBytes(SerialNumber.PadRight(16, '\0'))[..16]),
+            // 62. Modify device serial number: 16 bytes; no data in the answer.
+            [SetSerialNumber] = command => { SerialNumber = Encoding.ASCII.GetString(command.Data).TrimEnd('\0'); return Answer(command, []); },
+            // 82. Inquire the punched card number (T5S): 4 bytes, 0 when no card was punched.
+            [InquireCard] = command => Answer(command, BigEndian(Cards.TryDequeue(out var card) ? card : 0, 4)),
         };
         listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -74,7 +104,10 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     {
         [SetDateTime] = 6, [GetRecordInformation] = 0, [DownloadRecords] = 2, [DownloadTemplate] = 6, [UploadTemplate] = 344,
         [GetDeviceTypeCode] = 0, [DeleteUser] = 6, [InitializeUserArea] = 0, [ClearRecords] = 4, [EnrollFingerprint] = 7,
-        [DownloadStaff] = 2,
+        [DownloadStaff] = 2, [GetBasicSettings] = 0, [SetBasicSettings] = 10, [GetAdvancedSettings] = 0,
+        [SetAdvancedSettings] = 15, [GetDateTime] = 0, [GetTcpParameters] = 0, [SetTcpParameters] = 27, [UploadRecord] = 14,
+        [GetDeviceId] = 0, [SetDeviceId] = 4, [InitializeSystem] = 0, [GetTimeZone] = 1, [SetTimeZone] = 29, [GetBells] = 0,
+        [SetBell] = 4, [OpenLock] = 0, [GetSerialNumber] = 0, [SetSerialNumber] = 16, [InquireCard] = 0,
     };
 
     public static Task<FakeAnvizDevice> StartAsync() => Task.FromResult(new FakeAnvizDevice());
@@ -100,6 +133,41 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     public List<FakeUser> Users { get; } = [];
     public List<FakeRecord> Records { get; } = [];
 
+    /// <summary>
+    /// 1. Get basic settings, 18 bytes: firmware (8, ASCII), communication password (3: length in the high nibble),
+    /// sleep time, volume, language, date/time format (bits 7-4 date: 0 Chinese, 1 America, 2 English; bits 3-0 time:
+    /// 0 = 24 h, 1 = 12 h), attendance state, language setting flag, command version.
+    /// </summary>
+    public byte[] BasicSettings { get; } = [.. "V2.1.0\0\0"u8, 0x40, 0x04, 0xD2, 5, 3, 2, 0x20, 1, 0x10, 0x02];
+
+    /// <summary>
+    /// 3. Get advanced settings, 15 bytes: FP precision, Wiegand head, Wiegand option, work code, real-time mode,
+    /// FP auto update, relay mode, lock delay, memory full alarm (3), repeat attendance delay, door sensor delay,
+    /// scheduled bell delay, reserved.
+    /// </summary>
+    public byte[] AdvancedSettings { get; } = [1, 0x11, 2, 1, 0, 1, 1, 5, 0x00, 0x01, 0xF4, 30, 10, 3, 0];
+
+    /// <summary>
+    /// 7. Get TCP/IP parameters, 27 bytes: IP (4), subnet mask (4), MAC (6), gateway (4), server IP (4), far limit,
+    /// com port (2), TCP/IP mode (0 server, 1 client), DHCP limit. The document does not give the octet order: first first.
+    /// </summary>
+    public byte[] TcpParameters { get; } =
+        [192, 168, 1, 218, 255, 255, 255, 0, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 192, 168, 1, 1, 192, 168, 1, 10, 0, 0x13, 0x92, 0, 0];
+
+    /// <summary>5. The device's clock, answered by 0x38.</summary>
+    public DateTime Clock { get; set; } = new(2026, 10, 25, 14, 30, 15);
+
+    public string SerialNumber { get; set; } = "M7A0123456789";
+
+    /// <summary>Time zones 1-30 by number, 28 bytes each: Monday to Sunday, begin hour, begin minute, end hour, end minute.</summary>
+    public Dictionary<byte, byte[]> TimeZones { get; } = [];
+
+    /// <summary>30. Scheduled bells 1-30, 3 bytes each: hour, minute, weekday bits (bits 6-1 Saturday to Monday).</summary>
+    public byte[] Bells { get; } = new byte[90];
+
+    /// <summary>The cards punched on the reader, in order; 0x7E answers 0 when none is left.</summary>
+    public Queue<uint> Cards { get; } = [];
+
     /// <summary>Fingerprint templates by user code and backup code (1 = FP1, 2 = FP2).</summary>
     public Dictionary<(ulong UserCode, byte BackupCode), byte[]> Templates { get; } = [];
 
@@ -124,6 +192,12 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
 
     /// <summary>One-shot: the next <paramref name="command"/> is answered with exactly these bytes (error answers, malformed frames).</summary>
     public void AnswerNext(byte command, Func<Frame, byte[]> rawAnswer) => nextRawAnswers[command] = rawAnswer;
+
+    /// <summary>
+    /// Sends a device ping, 0x7F with no data, on the latest connection. Not in the document (its 0x7F is the C5's
+    /// "Sending Email"); the SDK takes it as a ping and answers 0xFF.
+    /// </summary>
+    public Task PingAsync() => latestStream!.WriteAsync(new Frame(DeviceId, 0x7F, null, []).ToBytes(), stop.Token).AsTask();
 
     /// <summary>One-shot: the next answer is written in pieces, cut at these byte offsets, with a short pause between.</summary>
     public void SplitNextAnswer(params int[] cuts) => nextCuts = cuts;
@@ -324,13 +398,83 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
         return Answer(command, []);
     }
 
-    /// <summary>24. Clear up records: clear type 0 deletes all records; the answer is the amount deleted (3 bytes).</summary>
+    /// <summary>
+    /// 24. Clear up records: clear type 0 deletes all records, 1 clears every new-record mark, 2 clears the marks of the
+    /// first N new records (N in bytes 2-4); the answer is the amount deleted or cleared (3 bytes).
+    /// </summary>
     private Frame ClearRecordsAnswer(Frame command)
     {
-        if (command.Data[0] != 0) return NotAnswered(command, $"clear type {command.Data[0]}");
-        var deleted = Records.Count;
-        Records.Clear();
-        return Answer(command, BigEndian((ulong)deleted, 3));
+        switch (command.Data[0])
+        {
+            case 0:
+                var deleted = Records.Count;
+                Records.Clear();
+                return Answer(command, BigEndian((ulong)deleted, 3));
+            case 1 or 2:
+                var limit = command.Data[0] == 1 ? int.MaxValue : (int)ReadBigEndian(command.Data.AsSpan(1, 3));
+                var cleared = 0;
+                for (var i = 0; i < Records.Count && cleared < limit; i++)
+                    if (Records[i].New)
+                    {
+                        Records[i] = Records[i] with { New = false };
+                        cleared++;
+                    }
+                return Answer(command, BigEndian((ulong)cleared, 3));
+            default:
+                return NotAnswered(command, $"clear type {command.Data[0]}");
+        }
+    }
+
+    /// <summary>5. Date and time: year, month, day, hour, minute, second, a byte each. The year's base is not stated: year - 2000.</summary>
+    private static byte[] DateTimeBytes(DateTime d) =>
+        [(byte)(d.Year - 2000), (byte)d.Month, (byte)d.Day, (byte)d.Hour, (byte)d.Minute, (byte)d.Second];
+
+    /// <summary>
+    /// 11. Upload T&amp;A records: one 14-byte record as 10 lays it out (user code, seconds since 2000, backup code,
+    /// record type, work types); no data in the answer.
+    /// </summary>
+    private Frame UploadRecordAnswer(Frame command)
+    {
+        var data = command.Data.AsSpan();
+        Records.Add(new FakeRecord(ReadBigEndian(data[..5]), RecordEpoch.AddSeconds(ReadBigEndian(data[5..9])), data[10]));
+        return Answer(command, []);
+    }
+
+    /// <summary>17. Modify the device id: 4 bytes; no data in the answer, which still carries the old id.</summary>
+    private Frame SetDeviceIdAnswer(Frame command)
+    {
+        var answer = Answer(command, []);
+        DeviceId = ReadBigEndian(command.Data);
+        return answer;
+    }
+
+    /// <summary>
+    /// 26. Get the time zone info: NO. (1 byte; "the total time zone amount is 30", the first number is not stated:
+    /// the fake numbers them 1-30), then the 28 bytes. An unset zone is all zero; another number is refused.
+    /// </summary>
+    private Frame GetTimeZoneAnswer(Frame command) =>
+        command.Data[0] is >= 1 and <= 30
+            ? Answer(command, TimeZones.GetValueOrDefault(command.Data[0]) ?? new byte[28])
+            : Fail(command);
+
+    /// <summary>27. Set time zone info: NO. (1-30 as 26), then the 28 bytes; no data in the answer.</summary>
+    private Frame SetTimeZoneAnswer(Frame command)
+    {
+        if (command.Data[0] is < 1 or > 30) return Fail(command);
+        TimeZones[command.Data[0]] = command.Data[1..];
+        return Answer(command, []);
+    }
+
+    /// <summary>
+    /// 31. Set ring info: NO., hour, minute, weekday bits; no data in the answer. 30 bells, the first number not stated:
+    /// the fake numbers them 1-30, as the time zones, and refuses another number.
+    /// </summary>
+    private Frame SetBellAnswer(Frame command)
+    {
+        var number = command.Data[0];
+        if (number is < 1 or > 30) return Fail(command);
+        command.Data[1..].CopyTo(Bells, (number - 1) * 3);
+        return Answer(command, []);
     }
 
     private async Task AcceptAsync()
@@ -350,7 +494,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     {
         using var _ = client;
         client.NoDelay = true;
-        var stream = client.GetStream();
+        var stream = latestStream = client.GetStream();
         try
         {
             while (true)
@@ -358,6 +502,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
                 var frame = await ReadFrameAsync(stream);
                 if (frame == null) return;
                 lock (received) received.Add(frame);
+                if (frame.Ret.HasValue) continue; // an answer from the SDK (the pong): the device does not answer it
 
                 byte[] answer;
                 if (DataLength.TryGetValue(frame.Code, out var length) && frame.Data.Length != length)

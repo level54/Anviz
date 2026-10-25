@@ -75,16 +75,36 @@ public sealed record Frame(ulong DeviceId, byte Code, byte? Ret, byte[] Data)
 /// <summary>The command codes the fake answers, named after the document's section titles (Part II). An answer's code is the command + 0x80.</summary>
 public static class CommandCode
 {
+    /// <summary>1. Get the information of T&amp;A device 1 (basic settings).</summary>
+    public const byte GetBasicSettings = 0x30;
+    /// <summary>2. Set the configure information of T&amp;A 1.</summary>
+    public const byte SetBasicSettings = 0x31;
+    /// <summary>3. Get the information of T&amp;A device 2 (advanced settings).</summary>
+    public const byte GetAdvancedSettings = 0x32;
+    /// <summary>4. Set the configure information of T&amp;A 2.</summary>
+    public const byte SetAdvancedSettings = 0x33;
+    /// <summary>5. Get the date and time of T&amp;A.</summary>
+    public const byte GetDateTime = 0x38;
     /// <summary>6. Set the date and time of T&amp;A.</summary>
     public const byte SetDateTime = 0x39;
+    /// <summary>7. Get TCP/IP parameters.</summary>
+    public const byte GetTcpParameters = 0x3A;
+    /// <summary>8. Set TCP/IP parameters.</summary>
+    public const byte SetTcpParameters = 0x3B;
     /// <summary>9. Get record information.</summary>
     public const byte GetRecordInformation = 0x3C;
     /// <summary>10. Download T&amp;A records.</summary>
     public const byte DownloadRecords = 0x40;
+    /// <summary>11. Upload T&amp;A records.</summary>
+    public const byte UploadRecord = 0x41;
     /// <summary>14. Download FP template.</summary>
     public const byte DownloadTemplate = 0x44;
     /// <summary>15. Upload FP template.</summary>
     public const byte UploadTemplate = 0x45;
+    /// <summary>16. Get device S/N ("Get device ID which we set in device").</summary>
+    public const byte GetDeviceId = 0x46;
+    /// <summary>17. Modify device S/N (the device id).</summary>
+    public const byte SetDeviceId = 0x47;
     /// <summary>18. Get device type code.</summary>
     public const byte GetDeviceTypeCode = 0x48;
     /// <summary>22. Delete the designated user data.</summary>
@@ -93,10 +113,28 @@ public static class CommandCode
     public const byte InitializeUserArea = 0x4D;
     /// <summary>24. Clear up records / clear new records sign.</summary>
     public const byte ClearRecords = 0x4E;
+    /// <summary>25. Initialize System.</summary>
+    public const byte InitializeSystem = 0x4F;
+    /// <summary>26. Get the time zone info.</summary>
+    public const byte GetTimeZone = 0x50;
+    /// <summary>27. Set time zone info.</summary>
+    public const byte SetTimeZone = 0x51;
+    /// <summary>30. Get the scheduled bell info.</summary>
+    public const byte GetBells = 0x54;
+    /// <summary>31. Set ring info.</summary>
+    public const byte SetBell = 0x55;
     /// <summary>38. Enroll user FP online.</summary>
     public const byte EnrollFingerprint = 0x5C;
     /// <summary>44. Download employees data (extended).</summary>
     public const byte DownloadStaff = 0x72;
     /// <summary>45. Upload staff information (extended).</summary>
     public const byte UploadStaff = 0x73;
+    /// <summary>40. Output signal to open lock without verifying user.</summary>
+    public const byte OpenLock = 0x5E;
+    /// <summary>61. Get device serial number.</summary>
+    public const byte GetSerialNumber = 0x24;
+    /// <summary>62. Modify device serial number.</summary>
+    public const byte SetSerialNumber = 0x25;
+    /// <summary>82. Inquire information of card number (T5S use only).</summary>
+    public const byte InquireCard = 0x7E;
 }
