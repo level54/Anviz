@@ -82,4 +82,23 @@ public class FrameTests
         Assert.Equal(0x5F, packet.ResponseCode);
         Assert.Equal(data, packet.DATA);
     }
+    [Theory]
+    [InlineData(40)]
+    [InlineData(30)]
+    public async Task RX6_RX13_NameLongerThanItsField_IsCut_AndLeavesTheOtherFields(int recordLength)
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        // 25 characters: the name field is 10 characters in both records (20 bytes Unicode, 10 bytes ANSI).
+        var user = new UserInfo(7, "ABCDEFGHIJKLMNOPQRSTUVWXY");
+
+        await (recordLength == 40 ? device.SetEmployeesDataUnicode(user) : device.SetEmployeesDataAnsi(user));
+
+        var record = Assert.Single(AfterConnect(fake)).Data[1..];
+        Assert.Equal(recordLength, record.Length);
+        var nameEnd = recordLength == 40 ? 32 : 22;
+        // Department, group, attendance mode as UserInfo(id, name) sets them; FP enroll state 0.
+        Assert.Equal(new byte[] { 1, 1, 6, 0, 0 }, record[nameEnd..(nameEnd + 5)]);
+        Assert.Equal("ABCDEFGHIJ", Assert.Single(fake.Users).Name);
+    }
 }

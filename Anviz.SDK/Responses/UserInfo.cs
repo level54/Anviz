@@ -99,7 +99,7 @@ namespace Anviz.SDK.Responses
             }
             if (datalen == RECORD_LENGTH30)
             {
-                Encoding.ASCII.GetBytes(Name).CopyTo(ret, 12);
+                CopyName(Encoding.ASCII.GetBytes(Name), ret, 10);
                 ret[22] = Department;
                 ret[23] = Group;
                 ret[24] = Mode;
@@ -109,7 +109,7 @@ namespace Anviz.SDK.Responses
             }
             else if (datalen == RECORD_LENGTH40)
             { 
-                Encoding.BigEndianUnicode.GetBytes(Name).CopyTo(ret, 12);
+                CopyName(Encoding.BigEndianUnicode.GetBytes(Name), ret, 20);
                 ret[32] = Department;
                 ret[33] = Group;
                 ret[34] = Mode;
@@ -118,6 +118,12 @@ namespace Anviz.SDK.Responses
                 ret[39] = Message;
             }
             return ret;
+        }
+
+        // A name longer than its field is cut to the field: it never runs into department, group, mode or FP state.
+        private static void CopyName(byte[] name, byte[] record, int field)
+        {
+            System.Array.Copy(name, 0, record, 12, System.Math.Min(name.Length, field));
         }
 
         public UserInfo(ulong id, string name)
