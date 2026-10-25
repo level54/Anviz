@@ -489,7 +489,8 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
                 connections.Add(ServeAsync(client));
             }
         }
-        catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or SocketException) { }
+        // InvalidOperationException: the listener stopped before the loop asked for the next connection.
+        catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException) { }
     }
 
     private async Task ServeAsync(TcpClient client)
