@@ -72,9 +72,15 @@ namespace Anviz.SDK
                         // RX.14: a pong write stalled with no command running would hold the reader for ever; at the
                         // limit it is raised as DeviceError and the connection closes (it is gone).
                         var pong = WriteAsync(new PongCommand(response.DeviceID));
-                        if (!pong.IsCompleted && !await WrittenBefore(pong, Task.Delay(DEVICE_TIMEOUT)))
+                        if (!pong.IsCompleted)
                         {
-                            throw new TimeoutException("Device timeout writing the pong.");
+                            using var timer = new CancellationTokenSource();
+                            var written = await WrittenBefore(pong, Task.Delay(DEVICE_TIMEOUT, timer.Token));
+                            timer.Cancel(); // RX.7: no live timer left behind per pong
+                            if (!written)
+                            {
+                                throw new TimeoutException("Device timeout writing the pong.");
+                            }
                         }
                         await pong;
                         ReceivedPacket?.Invoke(this, response);
@@ -140,6 +146,7 @@ namespace Anviz.SDK
         {
             await _commandLock.WaitAsync();
             PendingCall call = null;
+            using var timer = new CancellationTokenSource(); // RX.7: the answer limit's timer, stopped when the call ends
             try
             {
                 if (closed)
@@ -160,7 +167,7 @@ namespace Anviz.SDK
                 }
                 // One limit for the write and the answer: a write stalled in the socket, or behind a stalled pong, ends
                 // the connection too, so it cannot hold the pong and the reader for ever.
-                var timeout = Task.Delay(DEVICE_TIMEOUT);
+                var timeout = Task.Delay(DEVICE_TIMEOUT, timer.Token);
                 if (!await WrittenBefore(WriteAsync(cmd), timeout))
                 {
                     Close();
@@ -187,6 +194,7 @@ namespace Anviz.SDK
             }
             finally
             {
+                timer.Cancel();
                 Interlocked.CompareExchange(ref pending, null, call);
                 _commandLock.Release();
             }
