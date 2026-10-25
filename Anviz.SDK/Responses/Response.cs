@@ -27,11 +27,15 @@ namespace Anviz.SDK.Responses
 
         public byte ResponseCode { get; }
 
-        internal Response(byte[] data, ulong deviceId, byte ACK)
+        /// <summary>RET of an answer (0 = success); 0 for a frame the device starts, which has no RET.</summary>
+        internal byte ReturnCode { get; }
+
+        internal Response(byte[] data, ulong deviceId, byte ACK, byte ret = 0)
         {
             DATA = data;
             DeviceID = deviceId;
             ResponseCode = ACK;
+            ReturnCode = ret;
         }
 
         internal static async Task<Response> FromStream(NetworkStream stream, CancellationToken ct)
@@ -72,12 +76,9 @@ namespace Anviz.SDK.Responses
                 throw new Exception("Invalid CRC");
             }
 
-            if (ACK >= 0x80 && (RetVal)data[6] != RetVal.SUCCESS)
-            {
-                throw new AnvizException((AnvizReturnCode)data[6]);
-            }
-
-            return new Response(PacketData, Bytes.Read(CH), ACK);
+            // An error answer is returned too: the reader gives it to the call waiting for its code (RF.11).
+            var ret = ACK >= 0x80 ? data[6] : (byte)RetVal.SUCCESS;
+            return new Response(PacketData, Bytes.Read(CH), ACK, ret);
         }
 
         private static async Task ReadAsyncContinuously(NetworkStream stream, byte[] data, int offset, int size, CancellationToken ct)

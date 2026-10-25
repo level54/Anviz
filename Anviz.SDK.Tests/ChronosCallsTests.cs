@@ -333,33 +333,6 @@ public class ChronosCallsTests
     }
 
     [Fact]
-    public async Task ErrorAnswerNotWaitedFor_FailsTheWaitingCall_Today()
-    {
-        await using var fake = await FakeAnvizDevice.StartAsync();
-        using var device = await fake.ConnectAsync();
-        var packets = new List<Response>();
-        var errors = new List<Exception>();
-        device.ReceivedPacket += (_, e) => packets.Add(e);
-        device.DeviceError += (_, e) => errors.Add(e);
-        // Before its answer to 0x48, the device sends an ACK_FAIL answer to 0x3C, which the SDK did not ask for.
-        fake.AnswerNext(GetDeviceTypeCode, command =>
-        [
-            .. new Frame(fake.DeviceId, GetRecordInformation + 0x80, FakeAnvizDevice.AckFail, []).ToBytes(),
-            .. TypeCodeAnswer(fake).ToBytes(),
-        ]);
-
-        var error = await Assert.ThrowsAsync<AnvizException>(device.GetDeviceTypeCode);
-
-        // RF.11: the answer code (0xBC) names the command the error is for; today any error answer fails the waiting
-        // call. RF.10: the error answer is read to its end, so the connection stays.
-        Assert.Equal(AnvizReturnCode.Fail, error.ReturnCode);
-        Assert.Equal("M7A+-N", await device.GetDeviceTypeCode());
-        // The stale 0xC8 answer may reach the second call or ReceivedPacket; the error answer never does.
-        Assert.DoesNotContain(packets, p => p.ResponseCode == GetRecordInformation + 0x80);
-        Assert.Empty(errors);
-    }
-
-    [Fact]
     public async Task DeviceError_BadCrc_RaisesIt_AndClosesTheConnection()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();

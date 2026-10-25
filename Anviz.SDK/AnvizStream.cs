@@ -51,11 +51,6 @@ namespace Anviz.SDK
                 {
                     response = await Response.FromStream(DeviceStream, CancellationTokenSource.Token);
                 }
-                catch (AnvizException ex)
-                {
-                    taskEmitter.TrySetException(ex);
-                    continue;
-                }
                 catch (Exception ex)
                 {
                     DeviceError?.Invoke(this, ex);
@@ -74,7 +69,15 @@ namespace Anviz.SDK
                 else if (response.ResponseCode == ResponseCode)
                 {
                     ResponseCode = 0;
-                    taskEmitter.TrySetResult(response);
+                    if (response.ReturnCode == 0)
+                        taskEmitter.TrySetResult(response);
+                    else
+                        taskEmitter.TrySetException(new AnvizException((AnvizReturnCode)response.ReturnCode));
+                }
+                else if (response.ReturnCode != 0)
+                {
+                    // RF.11: an error answer for a code nobody waits for is not the waiting call's; the connection stays.
+                    DeviceError?.Invoke(this, new AnvizException((AnvizReturnCode)response.ReturnCode));
                 }
                 else
                 {
