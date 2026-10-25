@@ -10,7 +10,7 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 
 ## Summary
 
-**Rows per verdict** (sections 1, 2 and 4 together; 181 rows):
+**Rows per verdict** (sections 1, 2 and 4 together; 182 rows):
 
 | Verdict | Rows | What it means |
 |---|---:|---|
@@ -18,13 +18,13 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 | deviates — M7 decides (S6) | 27 | The code differs from the document, or the document says nothing. The M7 run decides: if the M7 follows the document the code is fixed; if it follows the code, the code stays with a `// M7 deviation:` comment. |
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
-| fixed (S3, commit) | 16 | An S3 fault fixed in the named commit. |
+| fixed (S3, commit) | 17 | An S3 fault fixed in the named commit. |
 | fault — fixed in S4 | 5 | A speed-only fault (buffers, allocations, timers, logging). Slice S4 fixes it. |
 | noted — no change (D3) | 1 | Found, but changing it would change the public behaviour (RX.8). |
 
 Of the 27 "M7 decides" rows, 14 are places where the document is **silent** (it never says how a value is encoded)
 and the code picked something; the M7 shows what the device really does. Of the 18 S3 rows, 4 (R44.5, R45.5, R4C.5,
-R5C.6) are the error-answer fault RF.10 seen from one command; they went with it. All 16 left in S3 are fixed; R73.11
+R5C.6) are the error-answer fault RF.10 seen from one command; they went with it. All 16 left in S3 are fixed, and RX.14 (the write timeouts), found in the S3 review, is fixed too; R73.11
 and R73.13 (the per-user "stored" answer flag) moved to "M7 decides": whether the M7 marks an updated user as not stored
 is unknown.
 
@@ -651,6 +651,7 @@ R73.13) moved from S3 to the M7 run (S6). The rows below are the rest.
 | RX.5 | `AnvizDevice.GetEmployeesData` | `catch (Exception) { }` around each user: a record that fails to read, or an exception from the caller's `EmployeesDataGet` handler, silently leaves that user out. Now: the other users are still read (Chronos's behaviour); each skipped user is logged at Error level with its position and its exception, and the download goes on. It is not raised as `DeviceError`: Chronos takes that as a lost connection and disposes the device. Test: `FrameTests.RX5_UserTheReadFailsOn_IsSkipped_AndLogged_NotDeviceError`. | fixed (S3, `35d8a08`) |
 | RX.6 | `UserInfo.ToArray`, Unicode record (0x73 B, the M7) | The name is copied in whole. The name field is 20 bytes (10 Unicode characters); a longer name runs into department, group, mode and the FP-state bytes (the first three are written again afterwards, the FP-state bytes keep name bytes); over 14 characters it throws `ArgumentException`. The record layout does not change (D8): S3 only stops a name longer than its field from writing past it, with the same guard as RX.13. Now: the name is cut to its 20 bytes. Test: `FrameTests.RX6_RX13_NameLongerThanItsField_IsCut_AndLeavesTheOtherFields(40)`. | fixed (S3, `35e915d`) |
 | RX.13 | `UserInfo.ToArray`, ANSI record (0x73 A, the M5) | The same as RX.6 in the 10-byte name field (10 ANSI characters): a longer name runs into department, group, mode and the FP-state bytes; over 18 characters it throws. The layout does not change (D8): the same S3 guard as RX.6. Now: the name is cut to its 10 bytes. Test: `FrameTests.RX6_RX13_NameLongerThanItsField_IsCut_AndLeavesTheOtherFields(30)`. | fixed (S3, `35e915d`) |
+| RX.14 | `AnvizStream.SendCommand` (command write) / `AnvizStream.ReceiveAsync` (pong write) | Neither write had a time limit (`WriteTimeout` covers synchronous writes only; the SDK writes async). A command write stalled in the socket, or behind a stalled pong, hung the call for ever, and the stalled pong held the reader with it; a stalled pong with no command running held the reader until the next command. A command write that failed with `IOException` (the device reset the connection before the reader saw it) reached the caller as `IOException`. Now: the command write and its answer share the 10-second limit; at the limit the connection closes and the caller gets `DeviceConnectionLostException`. A pong write has its own 10-second limit; at the limit it is raised as `DeviceError` and the connection closes (it is gone). A failed command write closes the connection and reaches the caller as `DeviceConnectionLostException`, the `IOException` inside. Tests: `FrameTests.StalledWrite_TheCallEndsAtTheTimeout_AndTheConnectionCloses`, `FrameTests.CloseWhileTheCallWaitsToWrite_TheCallerGetsDeviceConnectionLost`, `FrameTests.StalledPongWithNoCall_EndsAtTheTimeout_AsDeviceError`, `FrameTests.WriteFailsOnAResetConnection_TheCallerGetsDeviceConnectionLost`. | fixed (S3, `9596ad1` command write, `8330a99` pong write and failed write) |
 | RX.7 | `AnvizStream.SendCommand` | Each command starts a 10-second `Task.Delay` that is never cancelled: one live timer per command until it runs out. | fault — fixed in S4 |
 | RX.8 | `SetEmployeesDataUnicode(List)` / `SetEmployeesDataAnsi(List)` | Empty the caller's list (`users.RemoveRange`). Pinned by `SetEmployeesData_SendsRecords_Today`. Changing it changes the public behaviour. | noted — no change (D3) |
 | RX.9 | `Response.FromStream` | A new 16,000-byte buffer for every frame; a LEN above about 15,990 throws `IndexOutOfRangeException`. | fault — fixed in S4 |
