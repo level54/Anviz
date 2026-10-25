@@ -9,13 +9,21 @@ namespace Anviz.SDK.Tests;
 /// <summary>
 /// The timing baseline later slices compare against: fixed data sizes, 3 runs each on a fresh fake and connection,
 /// the median in milliseconds (the call only, not the connect). Prints a markdown table; never fails on a number.
+/// Runs alone (its own collection, no parallel classes) so other tests do not slow it.
 /// </summary>
+[Collection(nameof(TimingTests))]
 public class TimingTests
 {
     private const int Runs = 3;
 
+    /// <summary>The answer delay asked of the fake; Windows timers make the real one longer, the first row measures it.</summary>
+    private static readonly TimeSpan Delay = TimeSpan.FromMilliseconds(5);
+
+    private static byte[] Template(int seed) => Enumerable.Range(0, 338).Select(b => (byte)(b * seed)).ToArray();
+
     private static readonly (string Name, Func<FakeAnvizDevice, Func<AnvizDevice, Task>> Arrange)[] Cases =
     [
+        ("One round trip (get device type code)", _ => device => device.GetDeviceTypeCode()),
         ("Download 5,000 records", fake =>
         {
             var start = new DateTime(2026, 10, 25, 7, 0, 0);
@@ -29,11 +37,15 @@ public class TimingTests
         }),
         ("Get 200 templates", fake =>
         {
-            for (var i = 1; i <= 200; i++) fake.Templates[((ulong)i, 1)] = Enumerable.Range(0, 338).Select(b => (byte)(b * i)).ToArray();
+            for (var i = 1; i <= 200; i++) fake.Templates[((ulong)i, 1)] = Template(i);
             return async device =>
             {
                 for (var i = 1; i <= 200; i++) await device.GetFingerprintTemplate((ulong)i, Finger.RightThumb);
             };
+        }),
+        ("Set 200 templates", _ => async device =>
+        {
+            for (var i = 1; i <= 200; i++) await device.SetFingerprintTemplate((ulong)i, Finger.RightThumb, Template(i));
         }),
         ("Set 200 users (Unicode)", _ => device =>
             device.SetEmployeesDataUnicode(Enumerable.Range(1, 200).Select(i => new UserInfo((ulong)i, $"Jürg Ñ{i:000}")).ToList())),
@@ -42,30 +54,33 @@ public class TimingTests
     [Fact]
     public async Task Baseline()
     {
-        var table = new StringBuilder("| Case | AnswerDelay 0 ms | AnswerDelay 5 ms |\n|---|---:|---:|\n");
+        var table = new StringBuilder($"| Case | No answer delay | Task.Delay({Delay.TotalMilliseconds:0}) before each answer |\n|---|---:|---:|\n");
         foreach (var (name, arrange) in Cases)
         {
-            var zero = await Median(arrange, TimeSpan.Zero);
-            var five = await Median(arrange, TimeSpan.FromMilliseconds(5));
-            table.Append($"| {name} | {zero} | {five} |\n");
+            var none = await Median(arrange, TimeSpan.Zero);
+            var delayed = await Median(arrange, Delay);
+            table.Append($"| {name} | {none:0.0} | {delayed:0.0} |\n");
         }
         TestContext.Current.TestOutputHelper!.WriteLine(table.ToString());
     }
 
-    private static async Task<long> Median(Func<FakeAnvizDevice, Func<AnvizDevice, Task>> arrange, TimeSpan delay)
+    private static async Task<double> Median(Func<FakeAnvizDevice, Func<AnvizDevice, Task>> arrange, TimeSpan delay)
     {
-        var times = new long[Runs];
+        var times = new double[Runs];
         for (var run = 0; run < Runs; run++)
         {
             await using var fake = await FakeAnvizDevice.StartAsync();
             fake.AnswerDelay = delay;
             var call = arrange(fake);
-            using var device = await new AnvizManager().Connect("127.0.0.1", fake.Port);
+            using var device = await fake.ConnectAsync();
             var watch = Stopwatch.StartNew();
             await call(device);
-            times[run] = watch.ElapsedMilliseconds;
+            times[run] = watch.Elapsed.TotalMilliseconds;
         }
         Array.Sort(times);
         return times[Runs / 2];
     }
 }
+
+[CollectionDefinition(nameof(TimingTests), DisableParallelization = true)]
+public class TimingTestsCollection;

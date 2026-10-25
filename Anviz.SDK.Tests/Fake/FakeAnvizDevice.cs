@@ -1,14 +1,21 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
+using Anviz.SDK.Tests.Fake;
+using Xunit.v3;
+using static Anviz.SDK.Tests.Fake.CommandCode;
+
+[assembly: FrameErrorsFailTheTest]
 
 namespace Anviz.SDK.Tests.Fake;
 
 /// <summary>
 /// An Anviz device on 127.0.0.1 that answers from the protocol document (Docs/Communication Protocol.pdf), not from
 /// the SDK's code. A received frame that breaks the document (header, LEN, CRC, device id) is a frame error: the fake
-/// closes that connection and fails the test when it is disposed.
+/// closes that connection; a command with the wrong data length is answered with ACK_FAIL. Either fails the test once
+/// it has run (<see cref="FrameErrorsFailTheTestAttribute"/>), beside any failure of the test's own.
 /// </summary>
 public sealed class FakeAnvizDevice : IAsyncDisposable
 {
@@ -28,6 +35,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     private readonly List<string> frameErrors = [];
     private readonly ConcurrentDictionary<byte, Func<Frame, byte[]>> nextRawAnswers = new();
     private int[]? nextCuts;
+    private readonly TaskCompletionSource clientClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>The answer to each command code, from the document's layout for it.</summary>
     private readonly Dictionary<byte, Func<Frame, Frame>> answers;
@@ -37,27 +45,53 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
         answers = new()
         {
             // 6. Set the date and time: the answer has no data.
-            [0x39] = command => Answer(command, []),
-            [0x3C] = command => Answer(command, RecordInformation()),
-            [0x40] = DownloadRecords,
-            [0x44] = DownloadTemplate,
-            [0x45] = UploadTemplate,
+            [SetDateTime] = command => Answer(command, []),
+            [GetRecordInformation] = command => Answer(command, RecordInformation()),
+            [DownloadRecords] = DownloadRecordsAnswer,
+            [DownloadTemplate] = DownloadTemplateAnswer,
+            [UploadTemplate] = UploadTemplateAnswer,
             // 18. Get device type code: 8 bytes of type code, ASCII, zero-padded ("TC400"000).
-            [0x48] = command => Answer(command, Encoding.ASCII.GetBytes(DeviceTypeCode.PadRight(8, '\0'))[..8]),
-            [0x4C] = DeleteUser,
+            [GetDeviceTypeCode] = command => Answer(command, Encoding.ASCII.GetBytes(DeviceTypeCode.PadRight(8, '\0'))[..8]),
+            [DeleteUser] = DeleteUserAnswer,
             // 23. Initialize the user area: clears all staff info, FP, password and card data; no data either way.
-            [0x4D] = command => { Users.Clear(); Templates.Clear(); return Answer(command, []); },
-            [0x4E] = ClearRecords,
-            [0x5C] = EnrollFingerprint,
-            [0x72] = DownloadStaff,
-            [0x73] = UploadStaff,
+            [InitializeUserArea] = command => { Users.Clear(); Templates.Clear(); return Answer(command, []); },
+            [ClearRecords] = ClearRecordsAnswer,
+            [EnrollFingerprint] = EnrollFingerprintAnswer,
+            [DownloadStaff] = DownloadStaffAnswer,
+            [UploadStaff] = UploadStaffAnswer,
         };
         listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         acceptLoop = AcceptAsync();
     }
 
+    /// <summary>
+    /// The command's data length from the document's "Command: (N Byte)" layout, for every command the fake answers but
+    /// 0x73 (1 + N records, checked by its answer). 24 (0x4E): the LEN example and the byte table give 4, the "Data
+    /// format: (3 Byte)" heading 3; 4 is taken.
+    /// </summary>
+    private static readonly Dictionary<byte, int> DataLength = new()
+    {
+        [SetDateTime] = 6, [GetRecordInformation] = 0, [DownloadRecords] = 2, [DownloadTemplate] = 6, [UploadTemplate] = 344,
+        [GetDeviceTypeCode] = 0, [DeleteUser] = 6, [InitializeUserArea] = 0, [ClearRecords] = 4, [EnrollFingerprint] = 7,
+        [DownloadStaff] = 2,
+    };
+
     public static Task<FakeAnvizDevice> StartAsync() => Task.FromResult(new FakeAnvizDevice());
+
+    /// <summary>
+    /// Connects the SDK. The yield moves the caller off the SDK's receiver thread: when the 0x48 answer is read before
+    /// that thread first waits, the caller's code runs on it, and a Dispose there joins the thread to itself and hangs.
+    /// </summary>
+    public async Task<AnvizDevice> ConnectAsync()
+    {
+        var device = await new AnvizManager().Connect("127.0.0.1", Port);
+        await Task.Yield();
+        return device;
+    }
+
+    /// <summary>Completes when the SDK side closes a connection.</summary>
+    public Task ClientClosed => clientClosed.Task;
 
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
     public ulong DeviceId { get; set; } = 1;
@@ -75,6 +109,17 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     public IReadOnlyList<Frame> Received
     {
         get { lock (received) return received.ToArray(); }
+    }
+
+    /// <summary>The frame errors so far, cleared: a test that expects one takes it, so it does not fail the test.</summary>
+    public IReadOnlyList<string> TakeFrameErrors()
+    {
+        lock (frameErrors)
+        {
+            var taken = frameErrors.ToArray();
+            frameErrors.Clear();
+            return taken;
+        }
     }
 
     /// <summary>One-shot: the next <paramref name="command"/> is answered with exactly these bytes (error answers, malformed frames).</summary>
@@ -126,7 +171,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// 10. Download T&amp;A records: parameter 1 restarts (all records), 0 goes on; record amount &lt;= 25. DATA = N, then
     /// N records of 14 bytes: user code (5), seconds since 2000 (4), backup code, record type, work types (3).
     /// </summary>
-    private Frame DownloadRecords(Frame command)
+    private Frame DownloadRecordsAnswer(Frame command)
     {
         var (parameter, amount) = (command.Data[0], command.Data[1]);
         if (parameter == 1) recordCursor = 0;
@@ -151,7 +196,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// 44. Download employees data (extended), B) Unicode: parameter 1 starts, 0 goes on; at most 8 records per answer.
     /// DATA = N, then N staff records of 40 bytes.
     /// </summary>
-    private Frame DownloadStaff(Frame command)
+    private Frame DownloadStaffAnswer(Frame command)
     {
         var (parameter, amount) = (command.Data[0], command.Data[1]);
         if (parameter == 1) staffCursor = 0;
@@ -182,7 +227,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
         else record[5] = record[6] = record[7] = record[37] = 0xFF;
         (user.Card is { } card ? BigEndian(card, 4) : [0xFF, 0xFF, 0xFF, 0xFF]).CopyTo(record, 8);
         Encoding.BigEndianUnicode.GetBytes(user.Name).CopyTo(record, 12);
-        record[32] = 1; // department
+        record[32] = user.Department;
         record[33] = 1; // group
         record[36] = (byte)((Templates.ContainsKey((user.UserCode, 1)) ? 1 : 0) | (Templates.ContainsKey((user.UserCode, 2)) ? 2 : 0));
         record[38] = 0xFF; // keep
@@ -194,7 +239,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// 45. Upload staff information (extended): DATA = N, then N records of 30 bytes (A, ANSI, N &lt;= 12) or 40 bytes
     /// (B, Unicode, N &lt;= 8). The answer is a 2-byte flag: bit n = 1 when staff n + 1 was stored.
     /// </summary>
-    private Frame UploadStaff(Frame command)
+    private Frame UploadStaffAnswer(Frame command)
     {
         var count = command.Data[0];
         var length = count == 0 ? 0 : (command.Data.Length - 1) / count;
@@ -225,19 +270,21 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
         var name = unicode
             ? Encoding.BigEndianUnicode.GetString(record[12..32])
             : Encoding.ASCII.GetString(record[12..22]);
-        return new FakeUser(ReadBigEndian(record[..5]), name.TrimEnd('\0')) { Password = password, Card = card };
+        return new FakeUser(ReadBigEndian(record[..5]), name.TrimEnd('\0'))
+        {
+            Password = password, Card = card, Department = record[unicode ? 32 : 22],
+        };
     }
 
     /// <summary>14. Download FP template: user code (5), backup code (1 = FP1, 2 = FP2); the answer is the 338-byte template.</summary>
-    private Frame DownloadTemplate(Frame command) =>
+    private Frame DownloadTemplateAnswer(Frame command) =>
         Templates.TryGetValue((ReadBigEndian(command.Data.AsSpan(0, 5)), command.Data[5]), out var template)
             ? Answer(command, template)
             : Fail(command, AckNoUser);
 
     /// <summary>15. Upload FP template: user code (5), backup code, template (338) = 344 bytes; no data in the answer.</summary>
-    private Frame UploadTemplate(Frame command)
+    private Frame UploadTemplateAnswer(Frame command)
     {
-        if (command.Data.Length != 344) return NotAnswered(command, $"with {command.Data.Length} bytes (the document says 344)");
         Templates[(ReadBigEndian(command.Data.AsSpan(0, 5)), command.Data[5])] = command.Data[6..];
         return Answer(command, []);
     }
@@ -246,7 +293,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// 38. Enroll user FP online: ID (5), backup ID, enroll times (0 = first, 1 = second); no data in the answer.
     /// After the second capture the fake holds a made-up 338-byte template for that finger.
     /// </summary>
-    private Frame EnrollFingerprint(Frame command)
+    private Frame EnrollFingerprintAnswer(Frame command)
     {
         var userCode = ReadBigEndian(command.Data.AsSpan(0, 5));
         if (command.Data[6] == 1)
@@ -258,7 +305,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     /// 22. Delete the designated user data: user code (5), backup code (bit 0 FP1, bit 1 FP2, bit 2 password, bit 3 card;
     /// 0xFF deletes all the user's data, staff info included); no data in the answer, ACK_NO_USER for an unknown user.
     /// </summary>
-    private Frame DeleteUser(Frame command)
+    private Frame DeleteUserAnswer(Frame command)
     {
         var userCode = ReadBigEndian(command.Data.AsSpan(0, 5));
         var backup = command.Data[5];
@@ -278,7 +325,7 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     }
 
     /// <summary>24. Clear up records: clear type 0 deletes all records; the answer is the amount deleted (3 bytes).</summary>
-    private Frame ClearRecords(Frame command)
+    private Frame ClearRecordsAnswer(Frame command)
     {
         if (command.Data[0] != 0) return NotAnswered(command, $"clear type {command.Data[0]}");
         var deleted = Records.Count;
@@ -313,21 +360,30 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
                 lock (received) received.Add(frame);
 
                 byte[] answer;
-                if (nextRawAnswers.TryRemove(frame.Code, out var raw))
+                if (DataLength.TryGetValue(frame.Code, out var length) && frame.Data.Length != length)
+                {
+                    FrameError($"Command 0x{frame.Code:X2} has {frame.Data.Length} data bytes, the document says {length}. " +
+                               $"Data: {Convert.ToHexString(frame.Data)}");
+                    answer = Fail(frame).ToBytes();
+                }
+                else if (nextRawAnswers.TryRemove(frame.Code, out var raw))
                     answer = raw(frame);
                 else if (answers.TryGetValue(frame.Code, out var build))
                     answer = build(frame).ToBytes();
                 else
                 {
                     FrameError($"The fake has no answer for command 0x{frame.Code:X2}.");
-                    answer = new Frame(DeviceId, (byte)(frame.Code + 0x80), AckFail, []).ToBytes();
+                    answer = Fail(frame).ToBytes();
                 }
 
                 if (AnswerDelay > TimeSpan.Zero) await Task.Delay(AnswerDelay, stop.Token);
                 await WriteAsync(stream, answer, Interlocked.Exchange(ref nextCuts, null));
             }
         }
-        catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException) { }
+        catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            if (!stop.IsCancellationRequested) clientClosed.TrySetResult();
+        }
     }
 
     /// <summary>Reads one frame; null when it broke the document (a frame error). A closed connection throws EndOfStreamException.</summary>
@@ -391,17 +447,35 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
         await acceptLoop;
         await Task.WhenAll(connections);
         stop.Dispose();
-        lock (frameErrors)
-        {
-            if (frameErrors.Count > 0)
-                Assert.Fail("The fake device received frames that break the document:" + Environment.NewLine +
-                            string.Join(Environment.NewLine, frameErrors));
-        }
+        var errors = TakeFrameErrors();
+        if (errors.Count == 0) return;
+        var message = "The fake device received frames that break the document:" + Environment.NewLine + string.Join(Environment.NewLine, errors);
+        // Thrown here, it would replace an exception already leaving the test; the attribute fails the test after it ran.
+        if (TestContext.Current.Test is { } test)
+            TestContext.Current.KeyValueStorage.AddOrUpdate(FrameErrorsFailTheTestAttribute.Key(test), message, (_, before) => before + Environment.NewLine + message);
+        else
+            Assert.Fail(message);
+    }
+}
+
+/// <summary>
+/// Fails a test, after it has run, with the frame errors its fakes kept. xUnit reports this failure beside the test's
+/// own, so a frame error never hides an assertion that failed first.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly)]
+public sealed class FrameErrorsFailTheTestAttribute : BeforeAfterTestAttribute
+{
+    public static string Key(Xunit.Sdk.ITest test) => $"{nameof(FakeAnvizDevice)}.FrameErrors:{test.UniqueID}";
+
+    public override void After(MethodInfo methodUnderTest, IXunitTest test)
+    {
+        if (TestContext.Current.KeyValueStorage.TryRemove(Key(test), out var message)) Assert.Fail((string)message!);
     }
 }
 
 public sealed record FakeUser(ulong UserCode, string Name)
 {
+    public byte Department { get; init; } = 1;
     public ulong? Password { get; init; }
     public ulong? Card { get; init; }
 }

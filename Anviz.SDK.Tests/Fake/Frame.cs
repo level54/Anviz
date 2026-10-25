@@ -71,3 +71,32 @@ public sealed record Frame(ulong DeviceId, byte Code, byte? Ret, byte[] Data)
         return crc;
     }
 }
+
+/// <summary>The command codes the fake answers, named after the document's section titles (Part II). An answer's code is the command + 0x80.</summary>
+public static class CommandCode
+{
+    /// <summary>6. Set the date and time of T&amp;A.</summary>
+    public const byte SetDateTime = 0x39;
+    /// <summary>9. Get record information.</summary>
+    public const byte GetRecordInformation = 0x3C;
+    /// <summary>10. Download T&amp;A records.</summary>
+    public const byte DownloadRecords = 0x40;
+    /// <summary>14. Download FP template.</summary>
+    public const byte DownloadTemplate = 0x44;
+    /// <summary>15. Upload FP template.</summary>
+    public const byte UploadTemplate = 0x45;
+    /// <summary>18. Get device type code.</summary>
+    public const byte GetDeviceTypeCode = 0x48;
+    /// <summary>22. Delete the designated user data.</summary>
+    public const byte DeleteUser = 0x4C;
+    /// <summary>23. Initialize the user area.</summary>
+    public const byte InitializeUserArea = 0x4D;
+    /// <summary>24. Clear up records / clear new records sign.</summary>
+    public const byte ClearRecords = 0x4E;
+    /// <summary>38. Enroll user FP online.</summary>
+    public const byte EnrollFingerprint = 0x5C;
+    /// <summary>44. Download employees data (extended).</summary>
+    public const byte DownloadStaff = 0x72;
+    /// <summary>45. Upload staff information (extended).</summary>
+    public const byte UploadStaff = 0x73;
+}
