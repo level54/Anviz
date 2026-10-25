@@ -18,13 +18,15 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 | deviates — M7 decides (S6) | 25 | The code differs from the document, or the document says nothing. The M7 run decides: if the M7 follows the document the code is fixed; if it follows the code, the code stays with a `// M7 deviation:` comment. |
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
-| fault — fixed in S3 | 18 | A fault in reading or sending frames, error answers or the background reader. Slice S3 fixes it. |
+| fault — fixed in S3 | 11 | A fault in reading or sending frames, error answers or the background reader. Slice S3 fixes it. |
+| fixed (S3, commit) | 7 | An S3 fault fixed in the named commit. |
 | fault — fixed in S4 | 5 | A speed-only fault (buffers, allocations, timers, logging). Slice S4 fixes it. |
 | noted — no change (D3) | 1 | Found, but changing it would change the public behaviour (RX.8). |
 
 Of the 25 "M7 decides" rows, 14 are places where the document is **silent** (it never says how a value is encoded)
 and the code picked something; the M7 shows what the device really does. Of the 18 S3 rows, 4 (R44.5, R45.5, R4C.5,
-R5C.6) are the error-answer fault RF.10 seen from one command; they go away with it.
+R5C.6) are the error-answer fault RF.10 seen from one command; they went with it. Fixed so far: RF.10, RF.12, RF.15
+and those 4.
 
 **Key to the codes in this document**
 
@@ -95,12 +97,12 @@ Document Part I. These rows hold for every command; command tables refer back to
 | RF.7 | CRC16 algorithm | "CRC16 check means all data CRC16" — no polynomial, start value or range | CRC-16/MCRF4XX (polynomial 0x8408 reflected, start 0xFFFF, no final XOR) over STX up to the last DATA byte | code | pending | deviates — M7 decides (S6) — document silent |
 | RF.8 | CRC byte order | "CRCL CRCH" (the 0x47 answer table alone writes CRCH CRCL — a typo) | Low byte first | doc | pending | matches |
 | RF.9 | RET codes | 8 codes: 0x00 success, 0x01 fail, 0x04 full, 0x05 empty, 0x06 no user, 0x08 capture timeout, 0x0A user occupied, 0x0B finger occupied | All 8 known (`AnvizReturnCode`); any other value is thrown as an unnamed code | doc | pending | matches |
-| RF.10 | Error answer: "When the RET != ACK_SUCCESS, the DATA and LEN … are always 0" | An error answer is 11 bytes: header, RET, LEN 0x00 0x00, CRC | Throws after reading RET and LEN; the 2 CRC bytes stay unread and unchecked. The next read starts on them, comes back short, and the connection closes. Pinned: `GetFingerprintTemplate_NoUser_ThrowsAndClosesTheConnection_Today`. | doc | pending | fault — fixed in S3 |
+| RF.10 | Error answer: "When the RET != ACK_SUCCESS, the DATA and LEN … are always 0" | An error answer is 11 bytes: header, RET, LEN 0x00 0x00, CRC | Reads the error answer to its end, checks the CRC, then throws `AnvizException` with its return code; the connection stays. Tests: `FrameTests.ErrorAnswer_IsAnvizException_AndConnectionStays`, `GetFingerprintTemplate_NoUser_Throws_AndTheConnectionStays`. | doc | pending | fixed (S3, `1e3d399`) |
 | RF.11 | Which call an error answer belongs to | The ACK code names the command (command + 0x80) | Any error answer fails whatever call is waiting, whatever its code (then RF.10 closes the connection). Pinned: `ErrorAnswerNotWaitedFor_FailsTheWaitingCall_Today`. | doc | pending | fault — fixed in S3 |
-| RF.12 | Frames the device starts (code below 0x80, no RET) | Command format: STX, CH, CMD, LEN (2), DATA, CRC — LEN is bytes 6-7 of the frame | Reads LEN from bytes 7-8, so LEN = (low byte × 256). Right only when LEN is 0; with data it waits for bytes that never come (10 s timeout). | doc (LEN 0 only: the 0x7F ping) | pending | fault — fixed in S3 |
+| RF.12 | Frames the device starts (code below 0x80, no RET) | Command format: STX, CH, CMD, LEN (2), DATA, CRC — LEN is bytes 6-7 of the frame | Reads LEN from bytes 6-7. Test: `FrameTests.DeviceSentFrameWithData_IsReadWhole_AndRaisedAsReceivedPacket`. | doc (LEN 0 only: the 0x7F ping) | pending | fixed (S3, `1e3d399`) |
 | RF.13 | Device ping 0x7F | No ping in the document. 0x7F is section 83 "Sending Email", a PC-to-device command for the C5; its answer is 0xFF. | A device-sent 0x7F is taken as a ping: the SDK answers 0xFF (see RFF.1) and raises `DevicePing`. | code | pending | deviates — M7 decides (S6) — document silent (the M7 probably pings only when it connects to a server; the check connects to it) |
 | RF.14 | Real-time record 0xDF (section 41) | Device sends ACK 0xDF, RET, LEN 0x00 0x0E, 14-byte record (layout as R40.4–R40.8); "only response message" — the PC sends nothing back | Raises `ReceivedRecord` with the record; sends nothing back. The record's time is one day late, as R40.5. Pinned: `ReceivedRecord_RealTimeRecord0xDF_RaisesItWithTheRecord_Today`. M7: seen only if real-time mode is already on (the check does not switch it on). | doc | pending | matches |
-| RF.15 | Frame split over several TCP reads | — (TCP may split any frame) | The 6-byte head and the 2- or 3-byte reads after it are single reads; a short read closes the connection. Only the DATA+CRC read is looped. | doc (can split an answer) | pending | fault — fixed in S3 |
+| RF.15 | Frame split over several TCP reads | — (TCP may split any frame) | Every part of the frame is read until full. Tests: `FrameTests.SplitHeader_IsReadWhole`, `FrameTests.SplitEverywhere_IsReadWhole`. | doc (can split an answer) | pending | fixed (S3, `1e3d399`) |
 | RF.16 | Bad STX or bad CRC | Document silent on what to do | `DeviceError` raised, connection closed, no attempt to find the next frame. Pinned: `DeviceError_BadCrc_RaisesIt_AndClosesTheConnection`. | doc | pending | matches |
 | RF.17 | Answers nobody asked for | — | An answer with no call waiting for its code is raised as `ReceivedPacket` (kept). But an answer is matched by code alone, CH not compared: a stray answer of the same code (a device repeat) that arrives after the next command has gone out completes that command with the wrong data. | doc | pending | fault — fixed in S3 |
 
@@ -325,7 +327,7 @@ Section 14. Request 6 bytes; answer 338 bytes (1,280 on iris devices).
 | R44.2 | Backup code, 6 — FP1 / FP2 | 1 = FP1, 2 = FP2 | `finger + 1`: RightThumb → 1, RightIndex → 2 (the only two Chronos uses) | doc | pending | matches |
 | R44.3 | Backup code, 6 — other fingers | Only 1 and 2 defined | RightMiddle … LeftThumb → 3 … 10. CrossChex lists "10 Fingerprints (1~10)". | code (keeps any backup code) | pending | deviates — M7 decides (S6) |
 | R44.4 | Template | 338 bytes (iris 1,280) | Returns DATA as it came, whatever its length | doc | pending | matches |
-| R44.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)` — then the connection closes (RF.10). Pinned `_Today` (see RF.10). | doc | pending | fault — fixed in S3 (by the RF.10 fix) |
+| R44.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)`; the connection stays (RF.10). Test: `GetFingerprintTemplate_NoUser_Throws_AndTheConnectionStays`. | doc | pending | fixed (S3, `1e3d399`) |
 
 *Fields:* 3 (R44.1, R44.2 + R44.3 for the one backup field, R44.4).
 
@@ -350,7 +352,7 @@ Section 15. Data 344 bytes.
 | R45.2 | User code, 1-5 | 5 bytes | 5 bytes | doc | pending | matches |
 | R45.3 | Backup code, 6 | 1 FP1, 2 FP2 | `finger + 1`, as R44.2 / R44.3 | doc | pending | matches (other fingers: R44.3) |
 | R45.4 | Template, 7-344 | 338 bytes | A shorter template is padded with zeros; a longer one throws `ArgumentException`. The frame is always 344 bytes. | doc | pending | matches |
-| R45.5 | Error answers (fail, no user) | Error answer, LEN 0 | Throws, then the connection closes (RF.10) | doc | pending | fault — fixed in S3 (by the RF.10 fix) |
+| R45.5 | Error answers (fail, no user) | Error answer, LEN 0 | Throws `AnvizException`; the connection stays (RF.10) | doc | pending | fixed (S3, `1e3d399`) |
 
 *Fields:* 3 (R45.2–R45.4). The iris variant (1,286 bytes) is not in the SDK — section 3.
 
@@ -409,7 +411,7 @@ Section 22. Data 6 bytes; answer success or ACK_NO_USER.
 | R4C.2 | Backup code 0xFF | 0xFF = delete everything of the user, staff info too | `DeleteEmployeesData(id)` and `(user)` send 0xFF | doc | pending | matches |
 | R4C.3 | Backup code bits 0-3 | Bit 3 card, 2 password, 1 FP2, 0 FP1 (staff info stays) | `(id, method)` sends the `VerificationMethod` byte: RightThumb 0x01, RightIndex 0x02, Password 0x04, RFCard 0x08 match | doc | pending | matches |
 | R4C.4 | Backup code bits 4-7 | Not defined | `VerificationMethod` also has RightMiddle 0x10 … LeftThumb 0x80; they are not single bits (RightLittle 0x30 = RightMiddle + RightAnular) | doc (bits 4-7 ignored) | pending | deviates — M7 decides (S6) |
-| R4C.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)`, then the connection closes (RF.10) | doc | pending | fault — fixed in S3 (by the RF.10 fix) |
+| R4C.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)`; the connection stays (RF.10). Test: `FrameTests.ErrorAnswer_IsAnvizException_AndConnectionStays`. | doc | pending | fixed (S3, `1e3d399`) |
 
 *Fields:* 2 (R4C.1; the backup field: R4C.2–R4C.4).
 
@@ -509,7 +511,7 @@ Section 38. Data 7 bytes; the answer has no data (its heading "12Byte" is a slip
 | R5C.3 | Enroll times, 7 | 0 first, 1 second ("verify double times") | 0 on the first capture, 1 on every later one (default 2 captures; `verifyCount` 3 sends 0, 1, 1) | doc | pending | matches |
 | R5C.4 | After the captures | — | Reads the new template with 0x44 backup 1 (R44.2) and returns it | doc | pending | matches |
 | R5C.5 | Waiting for the finger | The device waits for the finger and answers ACK_TIME_OUT on its own timeout (length not stated) | The SDK gives up after 10 s and closes the connection (the 10 s timeout stays, C4) | — | pending | deviates — M7 decides (S6) (does the M7 answer within 10 s?) |
-| R5C.6 | Error answers | ACK_FAIL, ACK_TIME_OUT; on the second capture also ACK_FULL, user occupied, finger occupied | Throws `AnvizException`, then the connection closes (RF.10) | doc | pending | fault — fixed in S3 (by the RF.10 fix) |
+| R5C.6 | Error answers | ACK_FAIL, ACK_TIME_OUT; on the second capture also ACK_FULL, user occupied, finger occupied | Throws `AnvizException`; the connection stays (RF.10) | doc | pending | fixed (S3, `1e3d399`) |
 
 *Fields:* 3 (R5C.1–R5C.3).
 
