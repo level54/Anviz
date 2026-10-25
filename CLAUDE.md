@@ -13,20 +13,24 @@ The solution contains two projects:
 ## Build Commands
 
 ```bash
-# Restore dependencies
-dotnet restore Anviz.sln
+# Build the library (netstandard2.0)
+dotnet build Anviz.SDK/Anviz.SDK.csproj -c Release
 
-# Build
-dotnet build Anviz.sln -c Release
+# Tests (net10.0, xunit.v3 on Microsoft.Testing.Platform, selected by global.json): name the project, no bare path
+dotnet test --project Anviz.SDK.Tests/Anviz.SDK.Tests.csproj
+dotnet test --project Anviz.SDK.Tests/Anviz.SDK.Tests.csproj --filter-class "*TimingTests" --output Detailed
 
 # Pack NuGet package
 dotnet pack Anviz.SDK/Anviz.SDK.csproj -c Release -o ./nupkg
-
-# Run the sample application
-dotnet run --project Sample/Sample.csproj
 ```
 
-There are no automated tests. Testing is done manually via the Sample project against real Anviz hardware or by reading protocol responses.
+`Sample/` (old-style net472) does not build: it calls `SetEmployeesData`, which no longer exists. `dotnet build Anviz.sln`
+therefore fails in Sample; build the projects above.
+
+`Anviz.SDK.Tests` drives the public `AnvizManager` / `AnvizDevice` against `FakeAnvizDevice`, a fake device on 127.0.0.1
+that answers from the protocol document (`Docs/Communication Protocol.pdf`; the markdown copy lost some command codes) and
+fails the test on any frame that breaks it. A test pinning today's code where it differs from the document ends `_Today`.
+`TimingTests` prints timings and never fails on a number. Tests connect through `FakeAnvizDevice.ConnectAsync`.
 
 ## Architecture
 
@@ -65,7 +69,7 @@ Response DTOs live in `Anviz.SDK/Responses/`: `UserInfo`, `Record`, `BasicSettin
 
 - User names: Unicode (20 bytes) or ANSI (10 bytes) — both variants exist for `SetStaffData`/`GetStaffData`
 - Fingerprint/face templates: raw binary
-- Device ID: 4-byte little-endian integer
+- Device ID: 4 bytes, high byte first
 - Fingers: 2-byte bitfield (14 fingers, LeftIndex → RightSmall); see `Anviz.SDK/Utils/Fingers.cs`
 
 ## Key Conventions

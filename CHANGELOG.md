@@ -1,3 +1,7 @@
+## v2.0.17 (unreleased)
+CHR27-1 (review against the protocol document, refactor, tested on the M7):
+* S1 `Anviz.SDK.Tests`: a fake device that checks every frame against the protocol document; today's behaviour of the calls Chronos makes pinned (`_Today` where the code differs from the document); first timings
+
 ## v2.0.16
 FEATURES:
 * InquireCard command to read current card, like EnrollFingerprint
