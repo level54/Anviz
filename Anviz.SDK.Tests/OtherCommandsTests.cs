@@ -152,19 +152,19 @@ public class OtherCommandsTests
     }
 
     [Fact]
-    public async Task GetDeviceID_TakesTheAnswerAsItsDeviceId_Today()
+    public async Task R46_3_GetDeviceID_ReturnsTheAnswer_AndKeepsItsDeviceId()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         using var device = await fake.ConnectAsync();
-        fake.AnswerNext(GetDeviceId, _ => new Frame(fake.DeviceId, GetDeviceId + 0x80, FakeAnvizDevice.AckSuccess, [0, 0, 0, 9]).ToBytes());
+        // The M7 answers 0x46 with 0x31353930 ("1590") while its CH is 1.
+        fake.AnswerNext(GetDeviceId, _ => new Frame(fake.DeviceId, GetDeviceId + 0x80, FakeAnvizDevice.AckSuccess, [0x31, 0x35, 0x39, 0x30]).ToBytes());
 
-        Assert.Equal(9UL, await device.GetDeviceID());
+        Assert.Equal(0x31353930UL, await device.GetDeviceID());
 
-        // R46.3: the document's 0x46 is the id set in the device menu (0x74 is the communication id) and does not say
-        // it is CH; today's code takes it as CH. Here CH is 1, so the next command goes to device 9 and is lost.
-        Assert.Equal(9UL, device.DeviceId);
-        await Assert.ThrowsAsync<DeviceConnectionLostException>(() => device.GetDeviceTypeCode());
-        Assert.Contains("Frame for device 9", Assert.Single(fake.TakeFrameErrors()));
+        // R46.3: the 0x46 id is not the CH (the M7 does not answer a command sent to it), so the CH from Connect stays.
+        Assert.Equal(1UL, device.DeviceId);
+        Assert.NotNull(await device.GetDeviceTypeCode());
+        Assert.Empty(fake.TakeFrameErrors());
     }
 #pragma warning restore CS0612
 

@@ -22,8 +22,9 @@ namespace Anviz.SDK
         public async Task<ulong> GetDeviceID()
         {
             var response = await DeviceStream.SendCommand(new GetDeviceIDCommand(DeviceId));
-            DeviceId = Bytes.Read(response.DATA);
-            return DeviceId;
+            // M7 (CHR27-1 S6): 0x46 answers the id set in the device menu (0x31353930 on the M7), not the CH it answers
+            // with (1); a command sent to that id gets no answer. So the CH from Connect stays.
+            return Bytes.Read(response.DATA);
         }
     }
 }
