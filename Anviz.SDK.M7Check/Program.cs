@@ -1,21 +1,23 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
 using Anviz.SDK.Utils;
 
-namespace Anviz.SDK.Check;
+namespace Anviz.SDK.M7Check;
 
 /// <summary>
 /// The M7 check (CHR27-1 S5): runs the D2-safe checks against one device and prints each result under the row ids of
 /// Docs/anviz_sdk_review_CHR27-1.md, with the raw frames sent (&gt;&gt;) and received (&lt;&lt;), the decoded values and a
-/// verdict. Writes only the test user (C13: added, read back, removed in a finally), the PC's time (D9) and, with
+/// verdict. Writes only the test user (C13: added, read back, removed in a finally, also after Ctrl+C), the PC's time (D9) and, with
 /// --enrol, one enrolment for the test user (D10). Every frame goes through <see cref="FrameRelay"/>, which also refuses
 /// any frame outside that list.
 /// </summary>
 public static class M7Check
 {
-    public const string Usage = "Usage: Anviz.SDK.M7Check <host> [port] [--enrol] [--time]";
+    public const string Usage = "Usage: Anviz.SDK.M7Check <host> [port 1-65535, default 5010] [--enrol] [--time]\n" +
+                                "       Anviz.SDK.M7Check <host> [port] --remove <id>   (removes the test user \"CHR27 TEST\" a stopped run left)";
     public const string TestUserName = "CHR27 TEST";
     private const ulong TestPassword = 4321, TestCard = 12345678;
 
@@ -24,34 +26,116 @@ public static class M7Check
 
     public static async Task<int> Main(string[] args)
     {
-        var flags = args.Where(a => a.StartsWith("--")).ToArray();
-        var rest = args.Except(flags).ToArray();
-        var port = 5010;
-        if (rest.Length is < 1 or > 2 || flags.Except(["--enrol", "--time"]).Any() || (rest.Length == 2 && !int.TryParse(rest[1], out port)))
+        var rest = args.ToList();
+        ulong removeId = 0;
+        var remove = rest.IndexOf("--remove");
+        if (remove >= 0)
         {
-            Console.Error.WriteLine(Usage);
-            return 2;
+            if (remove + 1 >= rest.Count || !ulong.TryParse(rest[remove + 1], out removeId) || removeId == 0)
+                return UsageError();
+            rest.RemoveRange(remove, 2);
         }
-        return await RunAsync(rest[0], port, Console.Out, flags.Contains("--enrol"), flags.Contains("--time"));
+        var flags = rest.Where(a => a.StartsWith("--")).ToArray();
+        rest = rest.Except(flags).ToList();
+        var port = 5010;
+        if (rest.Count is < 1 or > 2 || flags.Except(["--enrol", "--time"]).Any() || (removeId != 0 && flags.Length > 0) ||
+            (rest.Count == 2 && (!int.TryParse(rest[1], out port) || port is < 1 or > 65535)))
+            return UsageError();
+        if (removeId != 0) return await RemoveAsync(rest[0], port, removeId, Console.Out);
+
+        // Ctrl+C or closing the window stops the run; the test user is still removed (the finally in AllAsync).
+        using var stop = new CancellationTokenSource();
+        using var finished = new ManualResetEventSlim();
+        ConsoleCancelEventHandler onCtrlC = (_, e) =>
+        {
+            e.Cancel = true;
+            stop.Cancel();
+        };
+        Console.CancelKeyPress += onCtrlC;
+        // Window close: Windows ends the process about 5 s after the close event, so hold it while the removal runs.
+        using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, _ =>
+        {
+            stop.Cancel();
+            finished.Wait(TimeSpan.FromSeconds(4.5));
+        });
+        try
+        {
+            return await RunAsync(rest[0], port, Console.Out, flags.Contains("--enrol"), flags.Contains("--time"), stop.Token);
+        }
+        finally
+        {
+            finished.Set();
+            Console.CancelKeyPress -= onCtrlC;
+        }
     }
 
-    /// <summary>Runs every check; 0 when each passed.</summary>
-    public static async Task<int> RunAsync(string host, int port, TextWriter output, bool enrol, bool time)
+    private static int UsageError()
+    {
+        Console.Error.WriteLine(Usage);
+        return 2;
+    }
+
+    /// <summary>Runs every check; 0 when each passed. <paramref name="cancel"/> stops it after the current check and still removes the test user.</summary>
+    public static async Task<int> RunAsync(string host, int port, TextWriter output, bool enrol, bool time, CancellationToken cancel = default)
     {
         await using var relay = new FrameRelay(host, port);
-        using var run = new Run(relay, output);
+        using var run = new Run(relay, output, host, port, cancel);
         output.WriteLine($"Anviz M7 check of {host}:{port} through the relay 127.0.0.1:{relay.Port}, {DateTime.Now:yyyy-MM-dd HH:mm:ss}" +
                          $"{(enrol ? ", --enrol" : "")}{(time ? ", --time" : "")}");
         return await run.AllAsync(enrol, time);
     }
 
-    private sealed class Run(FrameRelay relay, TextWriter output) : IDisposable
+    /// <summary>Removes the test user a stopped run left (--remove): only when the device lists that id with the name "CHR27 TEST".</summary>
+    public static async Task<int> RemoveAsync(string host, int port, ulong id, TextWriter output)
+    {
+        await using var relay = new FrameRelay(host, port);
+        using var run = new Run(relay, output, host, port, default);
+        output.WriteLine($"Anviz M7 check of {host}:{port} through the relay 127.0.0.1:{relay.Port}, {DateTime.Now:yyyy-MM-dd HH:mm:ss}, --remove {id}");
+        return await run.RemoveLeftUserAsync(id);
+    }
+
+    private sealed class Run(FrameRelay relay, TextWriter output, string host, int port, CancellationToken cancel) : IDisposable
     {
         private const int FramesShown = 6;
         private AnvizDevice? device;
         private int passed, failed, pings;
+        private ulong remains;
 
         public async Task<int> AllAsync(bool enrol, bool time)
+        {
+            try
+            {
+                return await ChecksAsync(enrol, time);
+            }
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+            {
+                return Summary("Ctrl+C or the window closed");
+            }
+        }
+
+        public async Task<int> RemoveLeftUserAsync(ulong id)
+        {
+            var isTestUser = await Check("R72.1", $"0x72 id {id} is the test user \"{TestUserName}\"", async (d, v) =>
+            {
+                var user = (await d.GetEmployeesData()).FirstOrDefault(u => u.Id == id);
+                if (user == null) return Refuse(v, $"id {id} is not in the device's user list");
+                v.Add($"read: {Describe(user)}");
+                return user.Name == TestUserName || Refuse(v, $"id {id} is not named \"{TestUserName}\"");
+            });
+            if (!isTestUser)
+            {
+                output.WriteLine("REFUSED: that id is not the test user; nothing was written to the device.");
+                return Summary("refused");
+            }
+            relay.TestUserId = id;
+            await Remove(id);
+            relay.TestUserId = 0;
+            return Summary(null);
+        }
+
+        private string RemoveStep(ulong id) => $"Anviz.SDK.M7Check {host} {port} --remove {id}";
+
+        private async Task<int> ChecksAsync(bool enrol, bool time)
         {
             if (!await Check("RF.1 RF.2 RF.3 RF.4 RF.7 RF.8 R48.1 R48.2 R48.3 R48.4", "0x48 device type (sent by Connect)", (d, v) =>
                 {
@@ -96,16 +180,8 @@ public static class M7Check
                 testId = (users.Count == 0 ? 0 : users.Max(u => u.Id)) + 1;
                 v.Add($"test user id = the highest user id + 1 = {testId}");
                 if (testId > 0xFF_FFFF_FFFF) return Refuse(v, "the id does not fit in 5 bytes");
-                try
-                {
-                    var template = await d.GetFingerprintTemplate(testId, Finger.RightThumb);
-                    return Refuse(v, $"id {testId} already holds a {template.Length}-byte FP1 template");
-                }
-                catch (AnvizException e)
-                {
-                    v.Add($"FP1 read for id {testId}: the device answered {Ret(e)}: free");
-                    return true;
-                }
+                // Any device answer other than "no such user" (ACK_NO_USER) fails this check: the id is then not shown free.
+                return await NoSuchUser(d, testId, v) || Refuse(v, $"id {testId} already holds an FP1 template");
             });
             if (!free)
             {
@@ -113,6 +189,8 @@ public static class M7Check
                 return Summary("refused");
             }
 
+            cancel.ThrowIfCancellationRequested();
+            output.WriteLine($"Test user id {testId} will be added; if this run is stopped, remove it with: {RemoveStep(testId)}");
             relay.TestUserId = testId;
             try
             {
@@ -215,9 +293,16 @@ public static class M7Check
                 var user = new UserInfo(testId, TestUserName) { Password = TestPassword, Card = TestCard };
                 v.Add($"sent: {Describe(user)}");
                 await d.SetEmployeesDataUnicode(user);
+                v.Add($"R73.11 answer flag (bit 0 = user 1 stored): {AnswerFlag()}");
                 return true;
             });
-            await Check("R72.4 R72.5 R72.6 R72.7 R72.8 R72.9 R72.10 R72.11 R72.12 (R73.2-R73.10 read back)", "0x72 read the test user back", async (d, v) =>
+            await Check("R73.13", "0x73 the test user again (an update of a stored user)", async (d, v) =>
+            {
+                await d.SetEmployeesDataUnicode(new UserInfo(testId, TestUserName) { Password = TestPassword, Card = TestCard });
+                v.Add($"answer flag (bit 0 = user 1 stored; 0 would mark the update not stored): {AnswerFlag()}");
+                return true;
+            });
+            await Check("R72.4 R72.5 R72.6 R72.7 R72.8 R72.9 R72.10 R72.11 R72.12 (R73.2-R73.10 read back) RF.5", "0x72 read the test user back", async (d, v) =>
             {
                 var back = (await d.GetEmployeesData()).FirstOrDefault(u => u.Id == testId);
                 if (back == null)
@@ -226,6 +311,11 @@ public static class M7Check
                     return false;
                 }
                 v.Add($"read: {Describe(back)}");
+                // The read-back alone shows only that the bytes come back; the device's own 3-byte user count (0x3C,
+                // matched to the list in the id-free check) is a number the device wrote itself.
+                v.Add($"RF.5 byte order: card {TestCard} went out high byte first ({Convert.ToHexString(BitConverter.GetBytes((uint)TestCard).Reverse().ToArray())}, " +
+                      $"the >> 0x73 frame) and read back as {back.Card?.ToString() ?? "none"}; password {TestPassword} read back as {back.Password?.ToString() ?? "none"}; " +
+                      "the device's own user count (0x3C), read high byte first, matched the user list before the first write");
                 return back.Name == TestUserName && back.Password == TestPassword && back.Card == TestCard;
             });
             await Check("R45.1 R45.2 R45.3 R45.4", "0x45 set the test user's FP1 template (made up, 338 bytes)", async (d, v) =>
@@ -240,6 +330,19 @@ public static class M7Check
                 var same = template.AsSpan().SequenceEqual(TestTemplate);
                 v.Add($"{template.Length} bytes; the same as sent: {same}");
                 return same;
+            });
+            await Check("R44.3", "0x44 the test user's fingers 3-10 (backup codes 3-10; the document defines only 1 and 2)", async (d, v) =>
+            {
+                for (var finger = Finger.RightMiddle; finger <= Finger.LeftThumb; finger++)
+                    try
+                    {
+                        v.Add($"backup code {(int)finger + 1} ({finger}): {(await d.GetFingerprintTemplate(testId, finger)).Length} bytes");
+                    }
+                    catch (AnvizException e)
+                    {
+                        v.Add($"backup code {(int)finger + 1} ({finger}): the device answered {Ret(e)}");
+                    }
+                return true;
             });
             await Check("R44.6 R44.7", "0x44 GetFaceTemplate (the FP1 frame; the M7 has no face)", async (d, v) =>
             {
@@ -257,7 +360,7 @@ public static class M7Check
                 return Math.Abs((back - now).TotalSeconds) <= 2;
             });
             if (!enrol) return;
-            output.WriteLine("Press a finger on the M7 now");
+            output.WriteLine("Press the same finger on the M7 when it asks — it will ask twice.");
             await Check("R5C.1 R5C.2 R5C.3 R5C.4 R5C.5 R5C.6 R44.2", "0x5C enrol the test user's FP1 (2 captures), then 0x44 reads it (D10)", async (d, v) =>
             {
                 var watch = Stopwatch.StartNew();
@@ -309,42 +412,63 @@ public static class M7Check
                 return true;
             });
 
-        /// <summary>Removes the test user (0x4C, backup 0xFF: all its data), once more if the connection was lost, then checks it is gone.</summary>
+        /// <summary>
+        /// Removes the test user (0x4C, backup 0xFF: all its data), once more if the first try failed, then checks it is
+        /// gone. Runs even after Ctrl+C. When it is not shown gone, the run ends with a WARNING line (<see cref="Summary"/>).
+        /// </summary>
         private async Task Remove(ulong testId)
         {
             Func<AnvizDevice, List<string>, Task<bool>> delete = async (d, v) =>
             {
+                v.Add("R4C.4: backup code sent 0xFF (bits 0-3 FP1, FP2, password, card; bits 4-7, which the document does not define, set too)");
                 await d.DeleteEmployeesData(testId);
                 v.Add($"id {testId} deleted");
                 return true;
             };
-            if (!await Check("R4C.1 R4C.2", "0x4C remove the test user (backup code 0xFF)", delete))
-                await Check("R4C.1 R4C.2", "0x4C remove the test user, second try", delete);
-            await Check("R4C.5 R44.5", "the test user is gone (0x72 list; 0x44 FP1 read: ACK_NO_USER expected)", async (d, v) =>
+            if (!await Check("R4C.1 R4C.2 R4C.4", "0x4C remove the test user (backup code 0xFF)", delete, evenWhenStopped: true))
+                await Check("R4C.1 R4C.2 R4C.4", "0x4C remove the test user, second try", delete, evenWhenStopped: true);
+            var gone = await Check("R4C.5 R44.5", "the test user is gone (0x72 list; 0x44 FP1 read: ACK_NO_USER expected)", async (d, v) =>
             {
                 var listed = (await d.GetEmployeesData()).Any(u => u.Id == testId);
                 v.Add($"id {testId} in the user list: {listed}");
-                try
-                {
-                    var template = await d.GetFingerprintTemplate(testId, Finger.RightThumb);
-                    v.Add($"FP1 read: a {template.Length}-byte template is still there");
-                    return false;
-                }
-                catch (AnvizException e)
-                {
-                    v.Add($"FP1 read: the device answered {Ret(e)}");
-                    return !listed;
-                }
-            });
+                return await NoSuchUser(d, testId, v) && !listed;
+            }, evenWhenStopped: true);
+            if (!gone) remains = testId;
         }
+
+        /// <summary>
+        /// The 0x44 FP1 read of <paramref name="id"/>: true when the device answers ACK_NO_USER (free, or gone), false when
+        /// it returns a template. Any other device answer throws on, so the calling check fails.
+        /// </summary>
+        private static async Task<bool> NoSuchUser(AnvizDevice d, ulong id, List<string> values)
+        {
+            try
+            {
+                var template = await d.GetFingerprintTemplate(id, Finger.RightThumb);
+                values.Add($"FP1 read for id {id}: a {template.Length}-byte template is there");
+                return false;
+            }
+            catch (AnvizException e) when (e.ReturnCode == AnvizReturnCode.NoUser)
+            {
+                values.Add($"FP1 read for id {id}: the device answered {Ret(e)}: no such user");
+                return true;
+            }
+        }
+
+        /// <summary>The 2-byte DATA of the device's last answer (0x73: bits 0-11 = users 1-12 stored), from the relay.</summary>
+        private string AnswerFlag() =>
+            relay.LastDeviceFrame is { Length: 13 } f ? $"0x{(f[9] << 8) | f[10]:X4}" : "not in the answer";
 
         /// <summary>
         /// One check: its frames (the first <see cref="FramesShown"/>, and every BLOCKED or BAD line), its values, its
         /// verdict. A device error answer fails it unless <paramref name="errorAnswerPasses"/>; a lost connection fails it
-        /// and the next check connects again.
+        /// and the next check connects again. After Ctrl+C it throws OperationCanceledException before it starts, unless
+        /// <paramref name="evenWhenStopped"/> (the removal).
         /// </summary>
-        private async Task<bool> Check(string rows, string what, Func<AnvizDevice, List<string>, Task<bool>> body, bool errorAnswerPasses = false)
+        private async Task<bool> Check(string rows, string what, Func<AnvizDevice, List<string>, Task<bool>> body,
+                                       bool errorAnswerPasses = false, bool evenWhenStopped = false)
         {
+            if (!evenWhenStopped) cancel.ThrowIfCancellationRequested();
             output.WriteLine($"== {rows} · {what}");
             var values = new List<string>();
             string verdict;
@@ -396,7 +520,9 @@ public static class M7Check
         private int Summary(string? stopped)
         {
             output.WriteLine($"{passed} of {passed + failed} checks passed{(stopped == null ? "" : $"; stopped: {stopped}")}.");
-            return failed == 0 && stopped == null ? 0 : 1;
+            if (remains != 0)
+                output.WriteLine($"WARNING: test user id {remains} REMAINS on the device; remove it with: {RemoveStep(remains)}");
+            return failed == 0 && stopped == null && remains == 0 ? 0 : 1;
         }
 
         private static string Ret(AnvizException e) => $"RET 0x{(byte)e.ReturnCode:X2} ({e.ReturnCode})";

@@ -1,10 +1,15 @@
-using Anviz.SDK.Check;
+using System.Net;
+using System.Net.Sockets;
 using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
 using Anviz.SDK.Tests.Fake;
 using static Anviz.SDK.Tests.Fake.CommandCode;
 
 namespace Anviz.SDK.Tests;
+
+// Inside the namespace: the namespace Anviz.SDK.M7Check would otherwise hide its class M7Check.
+using M7Check = Anviz.SDK.M7Check.M7Check;
+using FrameRelay = Anviz.SDK.M7Check.FrameRelay;
 
 /// <summary>
 /// The M7 check program (Anviz.SDK.M7Check) run in-process against the fake device: it must reach only the D2-safe
@@ -50,7 +55,7 @@ public class M7CheckTests
         AddRealUsers(fake);
         var writer = new StringWriter();
 
-        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: true, time: true);
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: true, time: true, TestContext.Current.CancellationToken);
 
         TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
         Assert.Equal(0, code);
@@ -64,7 +69,187 @@ public class M7CheckTests
             f => Assert.Equal(new byte[] { 0, 0, 0, 0, 8 }, f.Data[..5]));
         Assert.All(fake.Received.Where(f => f.Code == UploadStaff), f => Assert.Equal(new byte[] { 1, 0, 0, 0, 0, 8 }, f.Data[..6]));
         Assert.Empty(fake.Templates);
-        Assert.DoesNotContain("  FAIL:", writer.ToString()); // the verdict lines
+        var text = writer.ToString();
+        Assert.DoesNotContain("  FAIL:", text); // the verdict lines
+        // K1: the way out is printed before the first write.
+        var notice = text.IndexOf($"Test user id 8 will be added; if this run is stopped, remove it with: Anviz.SDK.M7Check 127.0.0.1 {fake.Port} --remove 8");
+        Assert.InRange(notice, 0, text.IndexOf("== R73.1 "));
+        // K4: the M7-decides rows the program can observe.
+        Assert.Contains("== R44.3 ", text);
+        Assert.Contains("R4C.4: backup code sent 0xFF", text);
+        Assert.Contains("RF.5 byte order:", text);
+        Assert.Contains("R73.13", text);
+        // K5: one enrolment session, two captures.
+        Assert.Contains("Press the same finger on the M7 when it asks — it will ask twice.", text);
+        Assert.Equal(2, fake.Received.Count(f => f.Code == EnrollFingerprint));
+    }
+
+    [Fact]
+    public async Task Stopped_StillRemovesTestUser_AndRunsNothingMore()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        AddRealUsers(fake);
+        using var stop = new CancellationTokenSource();
+        // Ctrl+C while the template goes in (the test user exists by then).
+        fake.AnswerNext(UploadTemplate, command =>
+        {
+            stop.Cancel();
+            return new Frame(fake.DeviceId, UploadTemplate + 0x80, FakeAnvizDevice.AckSuccess, []).ToBytes();
+        });
+        var writer = new StringWriter();
+
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: true, time: true, stop.Token);
+
+        TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
+        Assert.NotEqual(0, code);
+        Assert.Contains("stopped", writer.ToString());
+        Assert.DoesNotContain(fake.Received, f => f.Code is SetDateTime or EnrollFingerprint);
+        Assert.Contains(fake.Received, f => f.Code == DeleteUser);
+        Assert.DoesNotContain(fake.Users, u => u.UserCode == 8);
+        AssertOnlySafeCommands(fake);
+    }
+
+    [Fact]
+    public async Task RemovalFails_LastLineWarnsTheUserRemains()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        AddRealUsers(fake);
+        byte[] Refuse(Frame command) => new Frame(fake.DeviceId, DeleteUser + 0x80, FakeAnvizDevice.AckFail, []).ToBytes();
+        fake.AnswerNext(DeleteUser, command =>
+        {
+            fake.AnswerNext(DeleteUser, Refuse); // the second try fails too
+            return Refuse(command);
+        });
+        var writer = new StringWriter();
+
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false, TestContext.Current.CancellationToken);
+
+        TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
+        Assert.NotEqual(0, code);
+        Assert.Contains(fake.Users, u => u.UserCode == 8);
+        Assert.StartsWith("WARNING: test user id 8 REMAINS on the device", writer.ToString().TrimEnd().Split('\n')[^1]);
+    }
+
+    [Fact]
+    public async Task IdFreeCheck_ErrorOtherThanNoUser_Refuses_AndWritesNothing()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        AddRealUsers(fake);
+        // The FP1 read of id 8 answers ACK_FAIL: not "no such user", so the id is not shown free.
+        fake.AnswerNext(DownloadTemplate, command =>
+            new Frame(fake.DeviceId, DownloadTemplate + 0x80, FakeAnvizDevice.AckFail, []).ToBytes());
+        var writer = new StringWriter();
+
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false, TestContext.Current.CancellationToken);
+
+        TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
+        Assert.NotEqual(0, code);
+        Assert.Contains("REFUSED", writer.ToString());
+        Assert.DoesNotContain(fake.Received, f => f.Code is UploadStaff or UploadTemplate or SetDateTime or EnrollFingerprint or DeleteUser);
+    }
+
+    [Fact]
+    public async Task Remove_TakesOnlyTheTestUser()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        AddRealUsers(fake);
+        fake.Users.Add(new FakeUser(8, M7Check.TestUserName));
+        var refused = new StringWriter();
+        var removed = new StringWriter();
+
+        var refusedCode = await M7Check.RemoveAsync("127.0.0.1", fake.Port, 7, refused);
+        var removedCode = await M7Check.RemoveAsync("127.0.0.1", fake.Port, 8, removed);
+
+        TestContext.Current.TestOutputHelper!.WriteLine(refused + removed.ToString());
+        Assert.NotEqual(0, refusedCode);
+        Assert.Contains("REFUSED", refused.ToString());
+        Assert.Equal(0, removedCode);
+        Assert.Equal([1UL, 7, 3], fake.Users.Select(u => u.UserCode)); // Ben (7) kept, the test user gone
+        Assert.Single(fake.Received, f => f.Code == DeleteUser);
+        AssertOnlySafeCommands(fake);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("65536")]
+    [InlineData("70000")]
+    public async Task Main_PortOutOfRange_Usage(string port)
+    {
+        Assert.Equal(2, await M7Check.Main(["127.0.0.1", port]));
+    }
+
+    [Fact]
+    public async Task Relay_ForwardsAFrameSplitAcrossReads_Whole()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        await using var relay = new FrameRelay("127.0.0.1", fake.Port);
+        using var device = await new AnvizManager().Connect("127.0.0.1", relay.Port);
+        relay.TakeFrames();
+        fake.SplitNextAnswer(1, 6, 9, 12);
+
+        Assert.Equal(fake.SerialNumber, await device.GetDeviceSN());
+
+        var lines = relay.TakeFrames();
+        Assert.Equal(2, lines.Count); // the command and the answer, each one whole line
+        Assert.StartsWith(">> A5", lines[0]);
+        Assert.StartsWith("<< A5", lines[1]);
+    }
+
+    [Theory]
+    [InlineData("bad first byte")]
+    [InlineData("short")]
+    public async Task Relay_BadFrameFromTheDevice_NotForwarded_Closed_Logged(string kind)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var listener = new TcpListener(IPAddress.Loopback, 0); // a stand-in device on 127.0.0.1
+        listener.Start();
+        try
+        {
+            var answer = new Frame(1, GetDeviceTypeCode + 0x80, FakeAnvizDevice.AckSuccess, new byte[8]).ToBytes();
+            byte[] bad = kind == "short" ? answer[..12] : [0x5A, .. answer[1..]];
+            var deviceSide = Task.Run(async () =>
+            {
+                using var client = await listener.AcceptTcpClientAsync(token);
+                var stream = client.GetStream();
+                await stream.ReadExactlyAsync(new byte[10], token); // the 0x48 command
+                await stream.WriteAsync(bad, token);
+            }, token); // then closes
+            await using var relay = new FrameRelay("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
+            using var pc = new TcpClient();
+            await pc.ConnectAsync(IPAddress.Loopback, relay.Port, token);
+            var pcStream = pc.GetStream();
+            await pcStream.WriteAsync(new Frame(1, GetDeviceTypeCode, null, []).ToBytes(), token);
+
+            var got = new MemoryStream();
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(token);
+            limit.CancelAfter(TimeSpan.FromSeconds(5));
+            try
+            {
+                await pcStream.CopyToAsync(got, limit.Token); // ends when the relay closes the connection
+            }
+            catch (IOException) { } // closed by a reset: closed as well
+
+            Assert.False(limit.IsCancellationRequested, "the relay kept the connection open");
+            Assert.Equal(0, got.Length); // nothing forwarded
+            await deviceSide;
+            Assert.Contains(relay.TakeFrames(), line => line.StartsWith("BAD FRAME"));
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Relay_UnexpectedErrorInAConnection_IsLogged_AndDisposeDoesNotFault()
+    {
+        // Port 70000 does not exist: the device connect throws ArgumentOutOfRangeException inside the relay.
+        var relay = new FrameRelay("127.0.0.1", 70000);
+        await Assert.ThrowsAnyAsync<Exception>(() => new AnvizManager().Connect("127.0.0.1", relay.Port));
+
+        await relay.DisposeAsync();
+
+        Assert.Contains(relay.TakeFrames(), line => line.StartsWith("RELAY ERROR"));
     }
 
     [Fact]
@@ -75,7 +260,7 @@ public class M7CheckTests
         fake.AnswerNext(UploadTemplate, command => new Frame(fake.DeviceId, UploadTemplate + 0x80, FakeAnvizDevice.AckFail, []).ToBytes());
         var writer = new StringWriter();
 
-        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false);
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false, TestContext.Current.CancellationToken);
 
         TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
         Assert.NotEqual(0, code);
@@ -93,7 +278,7 @@ public class M7CheckTests
         fake.Templates[(8, 1)] = new byte[338]; // id 8 holds a fingerprint though no staff record lists it
         var writer = new StringWriter();
 
-        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: true, time: true);
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: true, time: true, TestContext.Current.CancellationToken);
 
         TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
         Assert.NotEqual(0, code);
@@ -112,7 +297,7 @@ public class M7CheckTests
             new Frame(fake.DeviceId, GetRecordInformation + 0x80, FakeAnvizDevice.AckSuccess, [0, 0, 4, .. new byte[15]]).ToBytes());
         var writer = new StringWriter();
 
-        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false);
+        var code = await M7Check.RunAsync("127.0.0.1", fake.Port, writer, enrol: false, time: false, TestContext.Current.CancellationToken);
 
         TestContext.Current.TestOutputHelper!.WriteLine(writer.ToString());
         Assert.NotEqual(0, code);

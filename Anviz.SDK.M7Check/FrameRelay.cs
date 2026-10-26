@@ -2,14 +2,15 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
-namespace Anviz.SDK.Check;
+namespace Anviz.SDK.M7Check;
 
 /// <summary>
 /// A logging relay on 127.0.0.1 between the SDK and the device: the SDK connects here, each connection opens one to the
 /// device, and every frame is read whole by the frame rules (0xA5, CH 4, code, RET when code &gt;= 0x80, LEN 2, DATA,
 /// CRC 2), logged in hex, then forwarded. The SDK stays unchanged (D3) and the log shows the real wire bytes.
 /// A frame the PC sends that is not on the D2-safe list is never forwarded: it is logged BLOCKED and both connections
-/// close, so a forbidden command cannot reach the device even through a bug in the program.
+/// close, so a forbidden command cannot reach the device even through a bug in the program. A frame that breaks the
+/// frame rules (either side) is never forwarded either: it is logged BAD FRAME and both connections close.
 /// </summary>
 public sealed class FrameRelay : IAsyncDisposable
 {
@@ -37,10 +38,16 @@ public sealed class FrameRelay : IAsyncDisposable
     /// <summary>True: frames are not kept (the timing runs); the safe list still holds.</summary>
     public bool Quiet { get; set; }
 
+    /// <summary>The last whole frame the device sent (forwarded to the PC), for the values the SDK drops (the 0x73 answer flag).</summary>
+    public byte[]? LastDeviceFrame { get; private set; }
+
     /// <summary>The time the relay itself spent on frames (hex text and the forward write), so far.</summary>
     public TimeSpan RelayTime => TimeSpan.FromTicks(Interlocked.Read(ref relayTicks) * TimeSpan.TicksPerSecond / Stopwatch.Frequency);
 
-    /// <summary>The frame lines since the last call (">> " PC to device, "&lt;&lt; " device to PC, "BLOCKED ..."), cleared.</summary>
+    /// <summary>
+    /// The frame lines since the last call (">> " PC to device, "&lt;&lt; " device to PC, "BLOCKED ...", "BAD FRAME ...",
+    /// "RELAY ERROR ..."), cleared.
+    /// </summary>
     public List<string> TakeFrames()
     {
         lock (frames)
@@ -51,11 +58,17 @@ public sealed class FrameRelay : IAsyncDisposable
         }
     }
 
+    /// <summary>Bytes from STX to the end of LEN: 8 for a command, 9 for an answer (its RET byte).</summary>
+    private static int HeaderLength(byte code) => code >= 0x80 ? 9 : 8;
+
+    private static string Hex(byte[] bytes) => BitConverter.ToString(bytes).Replace('-', ' ');
+
     /// <summary>Why the PC frame may not go to the device; null when it is on the D2-safe list.</summary>
     internal string? Refusal(byte[] frame)
     {
         var code = frame[5];
-        var data = frame.AsSpan(code >= 0x80 ? 9 : 8, frame.Length - (code >= 0x80 ? 11 : 10));
+        var header = HeaderLength(code);
+        var data = frame.AsSpan(header, frame.Length - header - 2);
         switch (code)
         {
             // Reads: device type, statistics, users, basic/advanced settings, date/time, TCP, device id, serial number,
@@ -112,13 +125,13 @@ public sealed class FrameRelay : IAsyncDisposable
         catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException) { }
     }
 
+    /// <summary>One PC connection and its device connection; never faults (an unexpected error is logged), both always closed.</summary>
     private async Task ServeAsync(TcpClient pc)
     {
-        using var _ = pc;
-        using var device = new TcpClient { NoDelay = true };
-        pc.NoDelay = true;
+        var device = new TcpClient { NoDelay = true };
         try
         {
+            pc.NoDelay = true;
             await device.ConnectAsync(host, port, stop.Token);
             var (pcStream, deviceStream) = (pc.GetStream(), device.GetStream());
             var pumps = new[] { PumpAsync(pcStream, deviceStream, ">> ", check: true), PumpAsync(deviceStream, pcStream, "<< ", check: false) };
@@ -129,6 +142,15 @@ public sealed class FrameRelay : IAsyncDisposable
             await Task.WhenAll(pumps);
         }
         catch (Exception e) when (IsClosed(e)) { }
+        catch (Exception e)
+        {
+            Keep($"RELAY ERROR ({e.GetType().Name}: {e.Message}): both connections closed");
+        }
+        finally
+        {
+            pc.Dispose();
+            device.Dispose();
+        }
     }
 
     private static bool IsClosed(Exception e) => e is OperationCanceledException or IOException or SocketException or ObjectDisposedException;
@@ -137,17 +159,17 @@ public sealed class FrameRelay : IAsyncDisposable
     {
         try
         {
-            while (await ReadFrameAsync(from) is { } frame)
+            while (await ReadFrameAsync(from, arrow) is { } frame)
             {
                 var started = Stopwatch.GetTimestamp();
-                var hex = Quiet ? null : arrow + BitConverter.ToString(frame).Replace('-', ' ');
                 var refusal = check ? Refusal(frame) : null;
                 if (refusal != null)
                 {
-                    Keep($"BLOCKED (not sent to the device: {refusal}) {BitConverter.ToString(frame).Replace('-', ' ')}");
+                    Keep($"BLOCKED (not sent to the device: {refusal}) {Hex(frame)}");
                     return;
                 }
-                if (hex != null) Keep(hex);
+                if (!Quiet) Keep(arrow + Hex(frame));
+                if (!check) LastDeviceFrame = frame;
                 await to.WriteAsync(frame, stop.Token);
                 Interlocked.Add(ref relayTicks, Stopwatch.GetTimestamp() - started);
             }
@@ -160,22 +182,28 @@ public sealed class FrameRelay : IAsyncDisposable
         lock (frames) frames.Add(line);
     }
 
-    /// <summary>One whole frame; null when the side closed or the frame does not start with 0xA5 (logged).</summary>
-    private async Task<byte[]?> ReadFrameAsync(NetworkStream stream)
+    /// <summary>
+    /// One whole frame; null when the side closed between frames, or (logged BAD FRAME, not forwarded) when the frame does
+    /// not start with 0xA5 or the side closed inside it.
+    /// </summary>
+    private async Task<byte[]?> ReadFrameAsync(NetworkStream stream, string arrow)
     {
-        var start = new byte[6];
+        var frame = new byte[6];
+        if (await stream.ReadAsync(frame.AsMemory(0, 1), stop.Token) == 0) return null;
+        if (frame[0] != 0xA5)
+        {
+            Keep($"BAD FRAME {arrow}(first byte 0x{frame[0]:X2}, not 0xA5; not forwarded): connection closed");
+            return null;
+        }
+        var have = 1;
         try
         {
-            await stream.ReadExactlyAsync(start, stop.Token);
-            if (start[0] != 0xA5)
-            {
-                Keep($"BAD FRAME (first byte 0x{start[0]:X2}, not 0xA5): connection closed");
-                return null;
-            }
-            var header = start[5] >= 0x80 ? 9 : 8;
-            var frame = new byte[header];
-            start.CopyTo(frame, 0);
+            await stream.ReadExactlyAsync(frame.AsMemory(1), stop.Token);
+            have = 6;
+            var header = HeaderLength(frame[5]);
+            Array.Resize(ref frame, header);
             await stream.ReadExactlyAsync(frame.AsMemory(6), stop.Token);
+            have = header;
             var length = (frame[header - 2] << 8) | frame[header - 1];
             Array.Resize(ref frame, header + length + 2);
             await stream.ReadExactlyAsync(frame.AsMemory(header), stop.Token);
@@ -183,18 +211,26 @@ public sealed class FrameRelay : IAsyncDisposable
         }
         catch (EndOfStreamException)
         {
+            Keep($"BAD FRAME {arrow}(short: the side closed inside the frame, after at least {have} of {frame.Length} bytes; not forwarded): " +
+                 $"{Hex(frame[..have])}");
             return null;
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        stop.Cancel();
-        listener.Stop();
-        await acceptLoop;
-        Task[] open;
-        lock (connections) open = connections.ToArray();
-        await Task.WhenAll(open);
-        stop.Dispose();
+        try
+        {
+            stop.Cancel();
+            listener.Stop();
+            await acceptLoop;
+            Task[] open;
+            lock (connections) open = connections.ToArray();
+            await Task.WhenAll(open);
+        }
+        finally
+        {
+            stop.Dispose();
+        }
     }
 }
