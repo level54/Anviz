@@ -26,7 +26,8 @@ namespace Anviz.SDK.Responses
 
         internal UserInfo(byte[] data, int offset, int datalen = RECORD_LENGTH40)
         {
-            log.Debug($"UserInfo: data.Length = {data.Length}, offset = {offset}, datalen = {datalen}");
+            if (log.IsDebugEnabled) // RX.12: the text is built only when it is written
+                log.Debug($"UserInfo: data.Length = {data.Length}, offset = {offset}, datalen = {datalen}");
 
             try
             {

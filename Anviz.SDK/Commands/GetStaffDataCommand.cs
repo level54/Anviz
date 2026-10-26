@@ -47,9 +47,12 @@ namespace Anviz.SDK
 
                 var reclen = (response.DATA.Length - 1) / counter;
 
-                log.Debug($"Received {counter} user records from device {DeviceId}.");
-                log.Debug($"response.DATA.Length: {response.DATA.Length}.");
-                log.Debug($"UserInfo.RECORD_LENGTH: {reclen}.");
+                if (log.IsDebugEnabled) // RX.12: the text is built only when it is written
+                {
+                    log.Debug($"Received {counter} user records from device {DeviceId}.");
+                    log.Debug($"response.DATA.Length: {response.DATA.Length}.");
+                    log.Debug($"UserInfo.RECORD_LENGTH: {reclen}.");
+                }
 
                 userAmount -= counter;
                 var cancel = false;

@@ -52,8 +52,9 @@ namespace Anviz.SDK
                 for (var i = 0; i < counter; i++)
                 {
                     currentCount += 1;
-                    RecordDownloaded?.Invoke(this, new RecordDownloadedEventArgs((int)totalCount, currentCount, new Record(response.DATA, 1 + i * Record.RECORD_LENGTH)));
-                    records.Add(new Record(response.DATA, 1 + i * Record.RECORD_LENGTH));
+                    var record = new Record(response.DATA, 1 + i * Record.RECORD_LENGTH); // RX.12: read once
+                    RecordDownloaded?.Invoke(this, new RecordDownloadedEventArgs((int)totalCount, currentCount, record));
+                    records.Add(record);
                 }
                 isFirst = false;
             }
