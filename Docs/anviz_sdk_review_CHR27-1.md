@@ -750,3 +750,19 @@ Why enrol 1 and 2 failed: the owner's fingers were enrolled on every user on the
 
 What it shows: no measurable gain (C14). The device and the network set the time; the SDK's own share is too small
 to see.
+
+## Appendix: Chronos on the new SDK (S7, 2026-10-25)
+
+Throwaway worktrees of Chronos `main` (8fafaf27) and `CHR2027` (06394e5f) whose `..\..\Anviz` reference pointed at this
+branch (at `7c725a0`), built with Visual Studio's MSBuild (Debug), with no Chronos code changed (C11). One local-only
+change in those copies: their DevExpress references were moved from 26.1.5 to 26.1.6, because this machine's GAC has
+held only 26.1.6 since 2026-10-24 and neither branch builds here otherwise; it has nothing to do with the SDK.
+
+| Chronos | Build | ChronosApp.Tests | Chronos.Web.Tests (no database) |
+|---|---|---:|---:|
+| `main` | 0 errors | 53 of 53 | — (not on main) |
+| `CHR2027` | 0 errors | 304 of 304 | 896 passed, 0 failed, 679 skipped (database tests) |
+
+Behaviour Chronos sees from the SDK changes (D3 keeps every public shape): a device error answer no longer drops the
+connection (S3); on a non-M5 device a user the device refuses to store now shows the error box for that user (R73.11);
+a name over 10 characters is cut by the SDK as Chronos already cuts it (RX.6, RX.13).

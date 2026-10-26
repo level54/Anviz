@@ -6,6 +6,7 @@ CHR27-1 (review against the protocol document, refactor, tested on the M7):
 * S4 transport hygiene: socket NoDelay, frame buffer sized from LEN (no limit at 15,990 bytes), answer and pong timers cancelled, field reads without LINQ, each record read once, debug text built only when debug logging is on. No measurable gain on the fake device; the M7 timing is S6
 * S5 `Anviz.SDK.M7Check`: the real-device check program behind an allow-list relay that logs every frame; the test user is removed even when the run is stopped
 * S6 the real M7: every review row has its M7 verdict; `GetDeviceID` no longer takes the 0x46 answer as the device code (R46.3); a Unicode user the device did not store (answer flag bit 0) throws `AnvizException` Fail, ANSI unchanged (R73.11); M7 timings before and after the same; enrolment proved
+* S7 Chronos `main` and `CHR2027` build and pass their tests on this SDK (no Chronos change)
 
 ## v2.0.16
 FEATURES:
