@@ -20,7 +20,8 @@ namespace Anviz.SDK.Responses
         public byte Department { get; set; }
         public byte Group { get; set; }
         public byte Mode { get; set; }
-        // M7 deviation (CHR27-1 S6): the document puts the password's high 8 bits in byte 38; every M7 user carries 0xFF there with a password of 20 bits or less, so it is not added to Password.
+        // M7 deviation (CHR27-1 S6): the document puts the password's high 8 bits in byte 38; every M7 user carries
+        // 0xFF there with a password of 20 bits or less, so it is not added to Password.
         public byte PWDH8 { get; set; }
         public byte Keep { get; set; }
         public byte Message { get; set; }
@@ -136,7 +137,7 @@ namespace Anviz.SDK.Responses
             Group = 1;
             Mode = 6;
             EnrolledFingerprints = new List<Finger>();
-            PWDH8 = 0xFF;
+            PWDH8 = 0xFF; // M7 deviation (CHR27-1 S6): read by the document, 0xFF << 20 + password; the M7 keeps 0xFF here
             Keep = 0xFF;
             Message = 0x40;
         }

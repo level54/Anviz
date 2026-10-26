@@ -180,28 +180,43 @@ public class ChronosCallsTests
         Assert.Empty(users); // Today the call empties the caller's list.
     }
 
-    [Theory]
-    [InlineData(40)]
-    [InlineData(30)]
-    public async Task R73_11_UserTheDeviceDidNotStore_IsAnvizException_Unicode_AnsiUnchanged(int recordLength)
+    // R73.11: the M7 answers the flag 0x0001 for a new and an updated user (S6), as the document says; a 0 bit is a refusal.
+    [Fact]
+    public async Task R73_11_Unicode_OneUserOfThreeNotStored_IsAnvizException_AndTheConnectionStays()
     {
         await using var fake = await FakeAnvizDevice.StartAsync();
         using var device = await fake.ConnectAsync();
-        // Answer flag 0x0000: bit 0 = 0, user 1 of the frame not stored.
-        fake.AnswerNext(UploadStaff, _ => new Frame(fake.DeviceId, UploadStaff + 0x80, FakeAnvizDevice.AckSuccess, [0, 0]).ToBytes());
-        var user = new UserInfo(7, "A");
+        AnswerUploadStaffWithFlag(fake, 0b101); // user 2 of the frame not stored
 
-        if (recordLength == 40)
-        {
-            // R73.11: the M7 answers 0x0001 for a new and an updated user (S6), as the document says; a 0 bit is a refusal.
-            var error = await Assert.ThrowsAsync<AnvizException>(() => device.SetEmployeesDataUnicode(user));
-            Assert.Equal(AnvizReturnCode.Fail, error.ReturnCode);
-        }
-        else
-            await device.SetEmployeesDataAnsi(user); // R73.13: the M5 path keeps ignoring the flag (D8; the M7 cannot run it).
+        var error = await Assert.ThrowsAsync<AnvizException>(() =>
+            device.SetEmployeesDataUnicode([new UserInfo(7, "A"), new UserInfo(8, "B"), new UserInfo(9, "C")]));
 
-        Assert.NotNull(await device.GetDeviceTypeCode()); // the connection stays
+        Assert.Equal(AnvizReturnCode.Fail, error.ReturnCode);
+        Assert.NotNull(await device.GetDeviceTypeCode());
     }
+
+    [Fact]
+    public async Task R73_11_Unicode_AnswerWithoutTheFlag_IsTakenAsStored()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        fake.AnswerNext(UploadStaff, _ => new Frame(fake.DeviceId, UploadStaff + 0x80, FakeAnvizDevice.AckSuccess, []).ToBytes());
+
+        await device.SetEmployeesDataUnicode(new UserInfo(7, "A"));
+    }
+
+    [Fact]
+    public async Task R73_13_Ansi_UserNotStored_IsStillIgnored()
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        AnswerUploadStaffWithFlag(fake, 0);
+
+        await device.SetEmployeesDataAnsi(new UserInfo(7, "A")); // the M5 path is unchanged (D8; the M7 cannot run it)
+    }
+
+    private static void AnswerUploadStaffWithFlag(FakeAnvizDevice fake, int flag) =>
+        fake.AnswerNext(UploadStaff, _ => new Frame(fake.DeviceId, UploadStaff + 0x80, FakeAnvizDevice.AckSuccess, [(byte)(flag >> 8), (byte)flag]).ToBytes());
 
     [Fact]
     public async Task DeleteEmployeesData_SendsUserIdAndFF()

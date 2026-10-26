@@ -3,7 +3,7 @@
 What this is: every command the SDK sends and every answer field it reads, set against `Docs/Communication
 Protocol.pdf` ("TC_B Communication Protocol V2.1", 39 pages). Where the PDF and its markdown copy differ, the PDF wins.
 The M7 column holds what the real M7 did in slice S6 (appendix *M7 runs*): of the 27 "M7 decides" rows, 10 match,
-7 are kept as M7 deviations, 8 could not be decided on the M7, and 2 were fixed.
+3 are kept as M7 deviations, 12 could not be decided on the M7, and 2 were fixed.
 
 Written 2026-10-25 from the code on branch `CHR27-1` at `7144bdb` (the review: commit `d9e0687`). The Fake column
 follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2 review fixes). Row ids (`R40.5`,
@@ -17,8 +17,8 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 |---|---:|---|
 | matches | 116 | The code does what the document says. |
 | matches — the M7 confirms the code (document silent) | 10 | The document says nothing; the M7 does what the code does. |
-| kept — M7 deviation | 7 | The code differs from the document and the M7 follows the code: the code stays, with a `// M7 deviation (CHR27-1 S6):` comment. |
-| kept — not decided on the M7 | 8 | The M7 run could not show it (the reason is in the row); the code stays. |
+| kept — M7 deviation | 3 | The code differs from the document and the M7 follows the code: the code stays, with a `// M7 deviation (CHR27-1 S6):` comment. |
+| kept — not decided on the M7 | 12 | The M7 run could not show it (the reason is in the row); the code stays. |
 | fixed (S6, commit) | 2 | The M7 follows the document (R73.11) or showed the code wrong (R46.3); fixed in the named commit. |
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
@@ -331,7 +331,7 @@ Section 14. Request 6 bytes; answer 338 bytes (1,280 on iris devices).
 |---|---|---|---|---|---|---|
 | R44.1 | User code, 1-5 | 5 bytes | 5 bytes (order: RF.5) | doc | same | matches |
 | R44.2 | Backup code, 6 — FP1 / FP2 | 1 = FP1, 2 = FP2 | `finger + 1`: RightThumb → 1, RightIndex → 2 (the only two Chronos uses) | doc | same: FP1, 338 bytes, as sent | matches |
-| R44.3 | Backup code, 6 — other fingers | Only 1 and 2 defined | RightMiddle … LeftThumb → 3 … 10. CrossChex lists "10 Fingerprints (1~10)". | code (keeps any backup code) | ACK_NO_USER for backup codes 3-10 (it takes them as fingers) | kept — M7 deviation |
+| R44.3 | Backup code, 6 — other fingers | Only 1 and 2 defined | RightMiddle … LeftThumb → 3 … 10. CrossChex lists "10 Fingerprints (1~10)". | code (keeps any backup code) | ACK_NO_USER, not ACK_FAIL, for backup codes 3-10 on a user holding FP1 only: the M7 does not refuse them | kept — not decided on the M7 (it did not refuse codes 3-10; whether they are fingers was not shown) |
 | R44.4 | Template | 338 bytes (iris 1,280) | Returns DATA as it came, whatever its length | doc | same: 338 bytes | matches |
 | R44.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)`; the connection stays (RF.10). Test: `GetFingerprintTemplate_NoUser_Throws_AndTheConnectionStays`. | doc | same: ACK_NO_USER, the connection stays | fixed (S3, `1e3d399`) |
 
@@ -343,8 +343,8 @@ The document has no face template command. The SDK reuses 0x44.
 
 | Id | Field | Document | Code | Fake | M7 | Verdict |
 |---|---|---|---|---|---|---|
-| R44.6 | The command | 0x44 is the fingerprint template; no face variant (only iris, 1,280 bytes) | 0x44 with backup code 1, the frame of R44.1/R44.2 | doc (answers the FP1 frame; no face) | the FP1 template (the M7 is a finger device) | kept — M7 deviation |
-| R44.7 | Answer length | Up to 400 bytes (RF.6) | Returns DATA raw; FacePass 7 sends 15,360 bytes (code comment) | doc (338 bytes; no face answer) | 338 bytes (the FP1 template) | kept — M7 deviation |
+| R44.6 | The command | 0x44 is the fingerprint template; no face variant (only iris, 1,280 bytes) | 0x44 with backup code 1, the frame of R44.1/R44.2 | doc (answers the FP1 frame; no face) | the FP1 template (the M7 is a finger device) | kept — not decided on the M7 (a finger device cannot show the face path) |
+| R44.7 | Answer length | Up to 400 bytes (RF.6) | Returns DATA raw; FacePass 7 sends 15,360 bytes (code comment) | doc (338 bytes; no face answer) | 338 bytes (the FP1 template) | kept — not decided on the M7 (a finger device cannot show the face path) |
 
 *Fields:* none of its own (the request is the 0x44 request).
 
@@ -416,7 +416,7 @@ Section 22. Data 6 bytes; answer success or ACK_NO_USER.
 | R4C.1 | User code, 1-5 | 5 bytes | 5 bytes (order: RF.5) | doc | same | matches |
 | R4C.2 | Backup code 0xFF | 0xFF = delete everything of the user, staff info too | `DeleteEmployeesData(id)` and `(user)` send 0xFF | doc | same: the test user deleted | matches |
 | R4C.3 | Backup code bits 0-3 | Bit 3 card, 2 password, 1 FP2, 0 FP1 (staff info stays) | `(id, method)` sends the `VerificationMethod` byte: RightThumb 0x01, RightIndex 0x02, Password 0x04, RFCard 0x08 match | doc | not run | matches |
-| R4C.4 | Backup code bits 4-7 | Not defined | `VerificationMethod` also has RightMiddle 0x10 … LeftThumb 0x80; they are not single bits (RightLittle 0x30 = RightMiddle + RightAnular) | doc (bits 4-7 ignored) | 0xFF, bits 4-7 set: the whole user deleted (gone from 0x72; the FP1 read answers ACK_NO_USER) | kept — M7 deviation |
+| R4C.4 | Backup code bits 4-7 | Not defined | `VerificationMethod` also has RightMiddle 0x10 … LeftThumb 0x80; they are not single bits (RightLittle 0x30 = RightMiddle + RightAnular) | doc (bits 4-7 ignored) | 0xFF deleted the whole user, as R4C.2 says; the single bits 0x10-0x80 were never sent | kept — not decided on the M7 (bits 4-7 alone were not sent) |
 | R4C.5 | ACK_NO_USER | Error answer, LEN 0 | Throws `AnvizException(NoUser)`; the connection stays (RF.10). Test: `FrameTests.ErrorAnswer_IsAnvizException_AndConnectionStays`. | doc | not seen (the check deletes only the test user, which is there) | fixed (S3, `1e3d399`) |
 
 *Fields:* 2 (R4C.1; the backup field: R4C.2–R4C.4).
@@ -571,7 +571,7 @@ Section 45 B). Data N + N × 40 (N ≤ 8); answer a 2-byte flag.
 | R73.8 | FP enroll state, 36-37 | "can not set, this value is 0" | 0 | doc | same | matches |
 | R73.9 | Keep, 39 | Reserved; "If user data is empty, set it as 0xFF" | `Keep` (constructor: 0xFF) | doc | the M7 does not keep it: sent 0xFF, read 0x00 | matches |
 | R73.10 | Special info, 40 | Bits 7-6 authority; bit 4 card length (1 = 32-bit) | `Message` (constructor: 0x40 = normal user); bit 4 never set, even for a card above 24 bits. Pinned: `SetEmployeesData_SendsRecords_Today`. | doc | 0x40, bit 4 clear (card 12345678 fits 24 bits) | kept — not decided on the M7 (card 12345678 fits 24 bits) |
-| R73.11 | Answer flag, 2 bytes | Bits 0-11: user 1–12 stored (1) or not (0) | Ignored: a user the device refused was not reported. Now (Unicode only; ANSI R73.13 unchanged, D8): a 0 bit for a user of the frame throws `AnvizException(Fail)`. Test: `ChronosCallsTests.R73_11_UserTheDeviceDidNotStore_IsAnvizException_Unicode_AnsiUnchanged`. | doc | flag 0x0001 for a new and for an updated user, as the document says | fixed (S6, `160bc6a`) |
+| R73.11 | Answer flag, 2 bytes | Bits 0-11: user 1–12 stored (1) or not (0) | Ignored: a user the device refused was not reported. Now (Unicode only; ANSI R73.13 unchanged, D8): a 0 bit for a user of the frame throws `AnvizException(Fail)`. Test: `ChronosCallsTests.R73_11_UserTheDeviceDidNotStore_IsAnvizException_Unicode_AnsiUnchanged`. Chronos sees this: on a non-M5 device a user the device refuses now brings up the error box and stops that push, where before it was skipped silently. An answer without the 2-byte flag is still taken as stored. Tests: `R73_11_Unicode_OneUserOfThreeNotStored_IsAnvizException_AndTheConnectionStays`, `R73_11_Unicode_AnswerWithoutTheFlag_IsTakenAsStored`. | doc | flag 0x0001 for a new and for an updated user, as the document says | fixed (S6, `160bc6a`) |
 
 *Fields:* N + 11 per record (R73.2–R73.10: id, password, password high, card, name, department, group, mode, FP
 state, keep, special) + the answer flag (R73.11).
@@ -733,16 +733,18 @@ The M7 timings before and after are in the appendix *M7 runs*: no measurable gai
 | Before | `development` | `--time` | 21 of 26 | 0x40 (0 records), 0x24, 0x73 add, R44.3 (backup codes 3-10), the final 0x3C |
 | After | CHR27-1 before the S6 fixes | `--time` | 25 of 26 | 0x24 only: sent to CH 0x31353930 after `GetDeviceID` took the 0x46 answer as its CH (R46.3) |
 | After the fixes | CHR27-1 with `23cf990` (R46.3) and `160bc6a` (R73.11) | none | 25 of 25 | none (exit 0); 0x24 answers ASCII "1590100019260166" |
-| Enrol 1 | CHR27-1 | `--enrol` | 25 of 26 | none; 0x5C answered ACK_FAIL at the first capture (the made-up FP1 was still held) |
+| Enrol 1 | CHR27-1 | `--enrol` | 25 of 26 | none; 0x5C answered ACK_FAIL at the first capture (the test user still held the made-up FP1) |
 | Enrol 2 | CHR27-1 with `f6efd04` (FP1 removed first, as Chronos does) | `--enrol` | 24 of 26 | none; 0x5C ACK_FAIL again: the owner's fingers were enrolled on every user; the owner clocked during the run, so the new-record check failed too |
-| Enrol 3 | the same | `--enrol` | 26 of 26 | none (exit 0); enrolled in 4.3 s, after every user was removed at the owner's request (a local backup of the 13 users and 22 templates is kept outside the repo) |
+| Enrol 3 | the same | `--enrol` | 26 of 26 | none (exit 0); enrolled in 4.3 s, after every user was removed at the owner's request |
+
+Why enrol 1 and 2 failed: the owner's fingers were enrolled on every user on the M7, so the M7 would not take the same finger for a new user (the owner's explanation; removing FP1 first, run 2, did not help). With no users left, run 3 enrolled at once. The M7 was left with no users; a local backup of the 13 users and 22 templates is kept outside the repo, and putting them back is the owner's call.
 
 **C14 timings on the M7** (3 runs each, median ms, through the relay; the relay's own share is 0.1-0.6 ms):
 
 | Case | Before (`development`) | After (CHR27-1) |
 |---|---:|---:|
 | One round trip (get device type code) | 54.5 | 55.0 |
-| Download all records (0 on the M7) | 241.8 | 241.5 |
+| Download all records (0 on the M7: one empty answer, so this row says nothing about record speed; see section 5 for the fake) | 241.8 | 241.5 |
 | Get all users | 598.9 | 597.5 |
 | Get the test user's FP1 template | 55.9 | 56.4 |
 

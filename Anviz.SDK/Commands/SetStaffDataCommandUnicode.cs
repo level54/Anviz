@@ -39,10 +39,12 @@ namespace Anviz.SDK
         {
             while (users.Count > 0)
             {
-                var stored = (1UL << Math.Min(users.Count, UserInfo.MAX_RECORDS)) - 1;
+                var amount = Math.Min(users.Count, UserInfo.MAX_RECORDS); // before the command takes them off the list
                 var response = await DeviceStream.SendCommand(new SetStaffDataCommandUnicode(DeviceId, users));
-                // The answer flag: bit n = 1 when user n + 1 of the frame was stored (the M7 sets it for a new and an updated user).
-                if ((Bytes.Read(response.DATA) & stored) != stored)
+                // The answer flag: bit n = 1 when user n + 1 of the frame was stored; the M7 sets it for a new and an
+                // updated user. An answer without the 2-byte flag is taken as stored, as before CHR27-1.
+                var stored = (1UL << amount) - 1;
+                if (response.DATA.Length >= 2 && (Bytes.Read(response.DATA) & stored) != stored)
                     throw new AnvizException(AnvizReturnCode.Fail);
             }
         }

@@ -372,14 +372,11 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
 
     /// <summary>
     /// 38. Enroll user FP online: ID (5), backup ID, enroll times (0 = first, 1 = second); no data in the answer.
-    /// After the second capture the fake holds a made-up 338-byte template for that finger. A first capture for a finger
-    /// that already holds a template is ACK_FAIL, as the M7 answers (CHR27-1 S6; Chronos deletes the fingers first).
+    /// After the second capture the fake holds a made-up 338-byte template for that finger.
     /// </summary>
     private Frame EnrollFingerprintAnswer(Frame command)
     {
         var userCode = ReadBigEndian(command.Data.AsSpan(0, 5));
-        if (command.Data[6] == 0 && Templates.ContainsKey((userCode, command.Data[5])))
-            return Fail(command);
         if (command.Data[6] == 1)
             Templates[(userCode, command.Data[5])] = Enumerable.Range(0, 338).Select(i => (byte)(i + (int)userCode)).ToArray();
         return Answer(command, []);
