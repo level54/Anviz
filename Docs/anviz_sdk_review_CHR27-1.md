@@ -3,7 +3,7 @@
 What this is: every command the SDK sends and every answer field it reads, set against `Docs/Communication
 Protocol.pdf` ("TC_B Communication Protocol V2.1", 39 pages). Where the PDF and its markdown copy differ, the PDF wins.
 The M7 column holds what the real M7 did in slice S6 (appendix *M7 runs*): of the 27 "M7 decides" rows, 10 match,
-6 are kept as M7 deviations, 7 could not be decided on the M7, 2 were fixed, and 2 (R40.5, R5C.5) wait for the enrolment run.
+7 are kept as M7 deviations, 8 could not be decided on the M7, and 2 were fixed.
 
 Written 2026-10-25 from the code on branch `CHR27-1` at `7144bdb` (the review: commit `d9e0687`). The Fake column
 follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2 review fixes). Row ids (`R40.5`,
@@ -17,10 +17,9 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 |---|---:|---|
 | matches | 116 | The code does what the document says. |
 | matches — the M7 confirms the code (document silent) | 10 | The document says nothing; the M7 does what the code does. |
-| kept — M7 deviation | 6 | The code differs from the document and the M7 follows the code: the code stays, with a `// M7 deviation (CHR27-1 S6):` comment. |
-| kept — not decided on the M7 | 7 | The M7 run could not show it (the reason is in the row); the code stays. |
+| kept — M7 deviation | 7 | The code differs from the document and the M7 follows the code: the code stays, with a `// M7 deviation (CHR27-1 S6):` comment. |
+| kept — not decided on the M7 | 8 | The M7 run could not show it (the reason is in the row); the code stays. |
 | fixed (S6, commit) | 2 | The M7 follows the document (R73.11) or showed the code wrong (R46.3); fixed in the named commit. |
-| deviates — M7 decides (S6) | 2 | R40.5 and R5C.5: decided by the enrolment run (the M7 holds no clocking yet). |
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
 | fixed (S3, commit) | 17 | An S3 fault fixed in the named commit. |
@@ -70,9 +69,9 @@ R73.11 is fixed in S6 (R73.13, the ANSI record, is not run on the M7).
 4. **"Delete all users" sends data the document says it does not take** (R4D.1). Chronos calls it. The document gives
    0x4D no data; the SDK sends 6 bytes. A device that follows the document refuses it, and today that refusal also
    closes the connection (point 1, fixed in S3). The M7 may not run it (forbidden), so the layout stays unless the owner rules.
-5. **Clocking times may be one day late** (R40.5). The SDK counts record seconds from 2 January 2000; the document says
-   "since the year 2000". The CrossChex SDK document says 2 January, which is probably why the code does it. The M7
-   download decides. Every clocking Chronos downloads goes through this.
+5. **Clocking times are right on the M7** (R40.5). The SDK counts record seconds from 2 January 2000; the document says
+   "since the year 2000". The M7 counts from 2 January too (a clocking read back at its PC time), as the CrossChex SDK
+   document says: the code stays. Every clocking Chronos downloads goes through this.
 
 Also worth knowing: a frame that arrives in more than one TCP piece closes the connection (RF.15, fixed in S3), and
 setting users ignores the device's per-user "stored / not stored" answer (R73.11; fixed in S6).
@@ -108,7 +107,7 @@ Document Part I. These rows hold for every command; command tables refer back to
 | RF.11 | Which call an error answer belongs to | The ACK code names the command (command + 0x80) | An error answer fails only the call waiting for its code; an error answer for a code nobody waits for is raised as `ReceivedPacket`, as a stray success answer is (RF.17), never as `DeviceError` (Chronos takes `DeviceError` as a lost connection); the waiting call still gets its own answer and the connection stays. Test: `FrameTests.RF11_ErrorAnswerForAnotherCode_IsReceivedPacket_AndTheWaitingCallGetsItsAnswer`. | doc | not seen | fixed (S3, `33c0055`) |
 | RF.12 | Frames the device starts (code below 0x80, no RET) | Command format: STX, CH, CMD, LEN (2), DATA, CRC — LEN is bytes 6-7 of the frame | Reads LEN from bytes 6-7. Test: `FrameTests.DeviceSentFrameWithData_IsReadWhole_AndRaisedAsReceivedPacket`. | doc (LEN 0 only: the 0x7F ping) | not seen | fixed (S3, `1e3d399`) |
 | RF.13 | Device ping 0x7F | No ping in the document. 0x7F is section 83 "Sending Email", a PC-to-device command for the C5; its answer is 0xFF. | A device-sent 0x7F is taken as a ping: the SDK answers 0xFF (see RFF.1) and raises `DevicePing`. | code | not seen (no ping) | kept — not decided on the M7 (no device ping in any run) |
-| RF.14 | Real-time record 0xDF (section 41) | Device sends ACK 0xDF, RET, LEN 0x00 0x0E, 14-byte record (layout as R40.4–R40.8); "only response message" — the PC sends nothing back | Raises `ReceivedRecord` with the record; sends nothing back. The record's time is one day late, as R40.5. Pinned: `ReceivedRecord_RealTimeRecord0xDF_RaisesItWithTheRecord_Today`. M7: seen only if real-time mode is already on (the check does not switch it on). | doc | not seen | matches |
+| RF.14 | Real-time record 0xDF (section 41) | Device sends ACK 0xDF, RET, LEN 0x00 0x0E, 14-byte record (layout as R40.4–R40.8); "only response message" — the PC sends nothing back | Raises `ReceivedRecord` with the record; sends nothing back. The record's time is read from 2 January 2000, as R40.5 (right on the M7). Pinned: `ReceivedRecord_RealTimeRecord0xDF_RaisesItWithTheRecord_Today`. M7: seen only if real-time mode is already on (the check does not switch it on). | doc | not seen | matches |
 | RF.15 | Frame split over several TCP reads | — (TCP may split any frame) | Every part of the frame is read until full. Tests: `FrameTests.SplitHeader_IsReadWhole`, `FrameTests.SplitEverywhere_IsReadWhole`. | doc (can split an answer) | same (every answer read whole) | fixed (S3, `1e3d399`) |
 | RF.16 | Bad STX or bad CRC | Document silent on what to do | `DeviceError` raised, connection closed, no attempt to find the next frame. Pinned: `DeviceError_BadCrc_RaisesIt_AndClosesTheConnection`. | doc | not seen | matches |
 | RF.17 | Answers nobody asked for | — | An answer with no call waiting for its code is raised as `ReceivedPacket` (kept). An answer completes the waiting call only when it has its code and its first byte came after the command was written (bytes the reader has already counted, or waiting in the socket, are earlier frames'; the count is read first, so no byte is counted twice); a repeat already counted is raised as `ReceivedPacket`. A repeat whose bytes the reader has read but not yet counted, or that is still on the wire, when the command goes may still be taken as the answer: the protocol has no sequence number to tell them apart. CH is not compared (one device per connection). Test: `FrameTests.RF17_StrayRepeatOfAnAnswer_DoesNotCompleteTheNextCall`. | doc | not seen | fixed (S3, `72fb41e`) |
@@ -301,14 +300,14 @@ Raises `RecordDownloaded` per record.
 
 | Id | Field | Document | Code | Fake | M7 | Verdict |
 |---|---|---|---|---|---|---|
-| R40.1 | Parameter, 1 | 0 next, 1 restart all, 2 restart new, 0x10 send last again | 1 (or 2 for new) on the first page, 0 after; never 0x10. Parameter 2 is proved on the fake (C6): `DownloadRecords_OnlyNew_Sends2ThenPages_ReadsOnlyTheNewRecords`. | doc (0, 1 and 2; 0x10 not modelled) | not run (0 records on the M7) | matches |
-| R40.2 | Record amount, 2 | ≤ 25 | Lesser of 25 and the records still to read | doc | not run (0 records on the M7) | matches |
-| R40.3 | Valid records N, answer byte 1 | N | Pages until N = 0 or the 0x3C count is reached | doc | not run (0 records on the M7) | matches |
-| R40.4 | User code, 1-5 | 5 bytes | `UserCode` (order: RF.5) | doc | not run (0 records on the M7) | matches |
-| R40.5 | Date&time, 6-9 | "how many seconds is it since the year 2000" (the worked example is garbled) | Seconds from **2 January 2000** (`DateConversions.RecordEpoch`). The CrossChex SDK document says "The number of seconds after 2000.1.2". Pinned: `DownloadRecords_All_Reads60RecordsIn3Pages_RaisingRecordDownloaded_Today` (the fake counts from 1 January, the SDK returns one day later). | doc | pending (enrol run) | deviates — M7 decides (S6) |
-| R40.6 | Backup code, 10 | 3 card, 2 password, 1 FP2, 0 FP1 | `BackupCode`, raw byte | doc | not run (0 records on the M7) | matches |
-| R40.7 | Record type, 11 | Bit 7 = may open door; low 4 bits = attendance state | `RecordType`, raw byte | doc | not run (0 records on the M7) | matches |
-| R40.8 | Work types, 12-14 | 3 bytes | `WorkType` (order: RF.5) | doc | not run (0 records on the M7) | matches |
+| R40.1 | Parameter, 1 | 0 next, 1 restart all, 2 restart new, 0x10 send last again | 1 (or 2 for new) on the first page, 0 after; never 0x10. Parameter 2 is proved on the fake (C6): `DownloadRecords_OnlyNew_Sends2ThenPages_ReadsOnlyTheNewRecords`. | doc (0, 1 and 2; 0x10 not modelled) | same: parameter 1 with amount 1 for the 1 record (enrol run 2), never 2 | matches |
+| R40.2 | Record amount, 2 | ≤ 25 | Lesser of 25 and the records still to read | doc | same (1) | matches |
+| R40.3 | Valid records N, answer byte 1 | N | Pages until N = 0 or the 0x3C count is reached | doc | same: N = 1 | matches |
+| R40.4 | User code, 1-5 | 5 bytes | `UserCode` (order: RF.5) | doc | same: user code 1 | matches |
+| R40.5 | Date&time, 6-9 | "how many seconds is it since the year 2000" (the worked example is garbled) | Seconds from **2 January 2000** (`DateConversions.RecordEpoch`). The CrossChex SDK document says "The number of seconds after 2000.1.2". Pinned: `DownloadRecords_All_Reads60RecordsIn3Pages_RaisingRecordDownloaded_Today` (the fake counts from 1 January, the SDK returns one day later). | doc | 0x326FDB81 seconds read from 2 January 2000 = 2026-10-25 21:11:29, the PC time of the clocking; from 1 January it would be a day early. record `01 | 00 00 00 00 01 | 32 6F DB 81 | 02 | 80 | 00 00 00` (one clocking the owner made at about 21:11 PC time, after the check set the M7 clock to the PC) | kept — M7 deviation |
+| R40.6 | Backup code, 10 | 3 card, 2 password, 1 FP2, 0 FP1 | `BackupCode`, raw byte | doc | the M7 sent 2 (how the owner verified was not recorded) | matches |
+| R40.7 | Record type, 11 | Bit 7 = may open door; low 4 bits = attendance state | `RecordType`, raw byte | doc | same: 0x80 (bit 7 set, state 0) | matches |
+| R40.8 | Work types, 12-14 | 3 bytes | `WorkType` (order: RF.5) | doc | same: 0 | matches |
 
 *Fields:* 8 (R40.1–R40.8). The document's LEN cell "(1 + N * 13)" is a slip for 14; the code uses the frame's LEN.
 
@@ -513,12 +512,12 @@ Section 38. Data 7 bytes; the answer has no data (its heading "12Byte" is a slip
 
 | Id | Field | Document | Code | Fake | M7 | Verdict |
 |---|---|---|---|---|---|---|
-| R5C.1 | User ID, 1-5 | 5 bytes | 5 bytes | doc | pending (enrol run) | matches |
-| R5C.2 | Backup ID, 6 | Which finger slot | Always 1 (FP1) | doc | pending (enrol run) | matches |
-| R5C.3 | Enroll times, 7 | 0 first, 1 second ("verify double times") | 0 on the first capture, 1 on every later one (default 2 captures; `verifyCount` 3 sends 0, 1, 1) | doc | pending (enrol run) | matches |
-| R5C.4 | After the captures | — | Reads the new template with 0x44 backup 1 (R44.2) and returns it | doc | pending (enrol run) | matches |
-| R5C.5 | Waiting for the finger | The device waits for the finger and answers ACK_TIME_OUT on its own timeout (length not stated) | The SDK gives up after 10 s and closes the connection (the 10 s timeout stays, C4) | — | pending (enrol run) | deviates — M7 decides (S6) (does the M7 answer within 10 s?) |
-| R5C.6 | Error answers | ACK_FAIL, ACK_TIME_OUT; on the second capture also ACK_FULL, user occupied, finger occupied | Throws `AnvizException`; the connection stays (RF.10) | doc | pending (enrol run) | fixed (S3, `1e3d399`) |
+| R5C.1 | User ID, 1-5 | 5 bytes | 5 bytes | doc | same (id 1, enrol run 3) | matches |
+| R5C.2 | Backup ID, 6 | Which finger slot | Always 1 (FP1) | doc | same: 1 | matches |
+| R5C.3 | Enroll times, 7 | 0 first, 1 second ("verify double times") | 0 on the first capture, 1 on every later one (default 2 captures; `verifyCount` 3 sends 0, 1, 1) | doc | same: 0, then 1; both answered ACK_SUCCESS | matches |
+| R5C.4 | After the captures | — | Reads the new template with 0x44 backup 1 (R44.2) and returns it | doc | same: 338 bytes, not the made-up template | matches |
+| R5C.5 | Waiting for the finger | The device waits for the finger and answers ACK_TIME_OUT on its own timeout (length not stated) | The SDK gives up after 10 s and closes the connection (the 10 s timeout stays, C4) | — | both captures answered within 4.3 s together; the M7's own timeout was not seen | kept — not decided on the M7 (the owner pressed in time; the M7's own timeout and an answer after 10 s were not seen) |
+| R5C.6 | Error answers | ACK_FAIL, ACK_TIME_OUT; on the second capture also ACK_FULL, user occupied, finger occupied | Throws `AnvizException`; the connection stays (RF.10) | doc | ACK_FAIL at the first capture while every finger was already held by other users (enrol runs 1-2); the call threw `AnvizException` Fail and the connection stayed | fixed (S3, `1e3d399`) |
 
 *Fields:* 3 (R5C.1–R5C.3).
 
@@ -734,6 +733,9 @@ The M7 timings before and after are in the appendix *M7 runs*: no measurable gai
 | Before | `development` | `--time` | 21 of 26 | 0x40 (0 records), 0x24, 0x73 add, R44.3 (backup codes 3-10), the final 0x3C |
 | After | CHR27-1 before the S6 fixes | `--time` | 25 of 26 | 0x24 only: sent to CH 0x31353930 after `GetDeviceID` took the 0x46 answer as its CH (R46.3) |
 | After the fixes | CHR27-1 with `23cf990` (R46.3) and `160bc6a` (R73.11) | none | 25 of 25 | none (exit 0); 0x24 answers ASCII "1590100019260166" |
+| Enrol 1 | CHR27-1 | `--enrol` | 25 of 26 | none; 0x5C answered ACK_FAIL at the first capture (the made-up FP1 was still held) |
+| Enrol 2 | CHR27-1 with `f6efd04` (FP1 removed first, as Chronos does) | `--enrol` | 24 of 26 | none; 0x5C ACK_FAIL again: the owner's fingers were enrolled on every user; the owner clocked during the run, so the new-record check failed too |
+| Enrol 3 | the same | `--enrol` | 26 of 26 | none (exit 0); enrolled in 4.3 s, after every user was removed at the owner's request (a local backup of the 13 users and 22 templates is kept outside the repo) |
 
 **C14 timings on the M7** (3 runs each, median ms, through the relay; the relay's own share is 0.1-0.6 ms):
 

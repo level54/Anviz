@@ -4,6 +4,7 @@ namespace Anviz.SDK.Utils
 {
     public static class DateConversions
     {
+        // M7 deviation (CHR27-1 S6): the document says seconds "since the year 2000"; the M7 counts from 2 January 2000.
         public static readonly DateTime RecordEpoch = new DateTime(2000, 1, 2);
 
         public static DateTime RecordToDateTime(ulong value)
