@@ -363,6 +363,9 @@ public static class M7Check
             output.WriteLine("Press the same finger on the M7 when it asks — it will ask twice.");
             await Check("R5C.1 R5C.2 R5C.3 R5C.4 R5C.5 R5C.6 R44.2", "0x5C enrol the test user's FP1 (2 captures), then 0x44 reads it (D10)", async (d, v) =>
             {
+                // The M7 answers ACK_FAIL to an enrolment into a finger that holds a template, so remove the made-up
+                // FP1 first, as Chronos does before it enrols (frmScanFingerPrint_Anviz._clearOriginalFingers).
+                await d.DeleteEmployeesData(testId, VerificationMethod.RightThumb);
                 var watch = Stopwatch.StartNew();
                 var template = await d.EnrollFingerprint(testId);
                 var differs = !template.AsSpan().SequenceEqual(TestTemplate);
