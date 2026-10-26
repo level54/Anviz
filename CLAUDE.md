@@ -30,7 +30,9 @@ therefore fails in Sample; build the projects above.
 `Anviz.SDK.Tests` drives the public `AnvizManager` / `AnvizDevice` against `FakeAnvizDevice`, a fake device on 127.0.0.1
 that answers from the protocol document (`Docs/Communication Protocol.pdf`; the markdown copy lost some command codes) and
 fails the test on any frame that breaks it. A test pinning today's code where it differs from the document ends `_Today`.
-`TimingTests` prints timings and never fails on a number. Tests connect through `FakeAnvizDevice.ConnectAsync`.
+`TimingTests` prints timings and never fails on a number. Tests connect through `FakeAnvizDevice.ConnectAsync`, except the M7 check tests, which connect through the check's relay.
+
+`Anviz.SDK.M7Check` (net10.0 console) runs the owner-approved checks against a real device: `dotnet run --project Anviz.SDK.M7Check -- <host> [port] [--enrol] [--time]`, or `--remove <id>` to remove a left-over test user (only one named "CHR27 TEST"). It talks to the device through `FrameRelay` on 127.0.0.1, which logs every frame and forwards only an allow list (reads; writes for the one test user; the clock within a minute of the PC); anything else closes the connection. Never widen that list without the owner: clear records, delete all users, the "new records" request, reset, reboot, network, device ID, serial number and unlock stay blocked.
 
 ## Architecture
 
