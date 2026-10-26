@@ -19,7 +19,7 @@ follows the fake device as of `ee7ab8a` (S2 fake-device tests) and `3357e74` (S2
 | deviates — kept, M7 cannot run it (C12) | 14 | The code differs from the document, but the M7 check may not run that command (forbidden, or outside the M7 list). Its layout stays. |
 | M5 path — not tested (D8) | 2 | The ANSI (30-byte) staff record used by M5 devices. It stays as it is and is not tested on the M7. |
 | fixed (S3, commit) | 17 | An S3 fault fixed in the named commit. |
-| fixed (S4, commit) | 5 | A speed fault (buffers, allocations, timers, logging) fixed in S4 in the named commit. |
+| fixed (S4, commit) | 5 | A speed fault (buffers, allocations, timers, logging) fixed in S4 in the named commit. Speed gain on the fake: none measurable (section 5). |
 | noted — no change (D3) | 1 | Found, but changing it would change the public behaviour (RX.8). |
 
 Of the 27 "M7 decides" rows, 14 are places where the document is **silent** (it never says how a value is encoded)
@@ -38,10 +38,12 @@ is unknown.
 | D4 | Where code and document differ, the M7 decides: the code is fixed if the M7 follows the document, kept with a comment if the M7 follows the code. This is the "M7 decides (S6)" verdict. |
 | D8 | The M5 path (the ANSI staff record) and other models stay as they are; a layout changes only where the document and the M7 agree. |
 | D9, D10 | The M7 check may set the clock (D9) and enrols one finger, the owner's (D10). |
+| C3 | Speed is measured before and after on the fake device (section 5). In S4 a change stays if the measurement shows a gain **or** it removes the fault its row names. |
 | C4 | The transport may be rewritten inside, with the same timeouts and events. |
 | C6 | The "new records" request changes the device's new-record marks, so it is proved on the fake only, never on the M7. |
 | C12 | A command the M7 check cannot run keeps the layout the code has today (sites run it); only frame faults are fixed for it. This is the "kept, M7 cannot run it (C12)" verdict. |
 | C13 | The M7 test user: name, password, card and one made-up fingerprint template. |
+| C14 | Speed is also timed on the M7 (S6); "no measurable gain" is a valid result. |
 | `_Today` | A test whose name ends `_Today` pins what the SDK does today where it differs from the document or the document is silent; the row it pins says so. |
 | CH | The 4-byte device id at the start of every frame. |
 | CMD / ACK | The command code; the device's answer code (ACK) is the command + 0x80. |
@@ -655,9 +657,9 @@ R73.13) moved from S3 to the M7 run (S6). The rows below are the rest.
 | RX.7 | `AnvizStream.SendCommand` | Each command starts a 10-second `Task.Delay` that is never cancelled: one live timer per command until it runs out. The pong write's limit (RX.14) did the same when the write did not end at once. Now: both limits are cancelled when the call or the pong write ends. Test: `AnswerTimerTests.RX7_AnsweredCommands_LeaveNoLiveTimer` (500 commands left 500 live timers before). | fixed (S4, `84be951`) |
 | RX.8 | `SetEmployeesDataUnicode(List)` / `SetEmployeesDataAnsi(List)` | Empty the caller's list (`users.RemoveRange`). Pinned by `SetEmployeesData_SendsRecords_Today`. Changing it changes the public behaviour. | noted — no change (D3) |
 | RX.9 | `Response.FromStream` | A new 16,000-byte buffer for every frame; a LEN above about 15,990 throws `IndexOutOfRangeException`. Now: the header is read into 9 bytes, then one buffer sized from LEN holds the frame; any LEN up to 65,535 is read whole. Test: `FrameTests.RX9_AnswerOfAnyLen_IsReadWhole(16000)` and `(65535)` (both lost the connection before). | fixed (S4, `36fd8c3`) |
-| RX.10 | `Bytes.Split` | Every field is cut with LINQ `Skip().Take().ToArray()`: a walk from the start of the buffer and a new array per field. Now: one `Array.Copy` of the range; a range past the end still gives the bytes that are there, as before. Covered by every frame test. | fixed (S4, `f6b2573`) |
-| RX.11 | `AnvizManager.Connect` / `Accept` | `NoDelay` is not set on the socket, so small frames can wait for Nagle's algorithm. Now: `AnvizStream` sets `NoDelay` on every socket (Connect and Accept both pass through it). | fixed (S4, `774aab7`) |
-| RX.12 | `DownloadRecords`, `GetEmployeesData`, `UserInfo` | `DownloadRecords` builds every `Record` twice (once for the event, once for the list); `GetEmployeesData` writes three debug lines per page and `UserInfo` one per user, the text built even when debug logging is off. Now: each record is read once and the same `Record` goes to the event and the list (as `EmployeesDataGet`'s `Employee` already did; Chronos's handlers read only the counts); the per-page and per-user debug text is built only when debug logging is on. | fixed (S4, `f91899c`) |
+| RX.10 | `Bytes.Split` | Every field is cut with LINQ `Skip().Take().ToArray()`: a walk from the start of the buffer and a new array per field. Now: one `Array.Copy` of the range; a range past the end still gives the bytes that are there, as before. Covered by every frame test. Kept as code hygiene: no measurable gain on the fake (section 5); it stays under C3 because it removes the row's fault (the walk from the start and LINQ's extra allocations per field). | fixed (S4, `f6b2573`) |
+| RX.11 | `AnvizManager.Connect` / `Accept` | `NoDelay` is not set on the socket, so small frames can wait for Nagle's algorithm. Now: `AnvizStream` sets `NoDelay` on every socket (Connect and Accept both pass through it). Kept as code hygiene: no measurable gain on the fake, where loopback has no real network delay (section 5); it stays under C3 because it removes the row's fault (the Nagle delay). Its effect can show only on a real network: it is timed on the M7 in S6 (C14). | fixed (S4, `774aab7`) |
+| RX.12 | `DownloadRecords`, `GetEmployeesData`, `UserInfo` | `DownloadRecords` builds every `Record` twice (once for the event, once for the list); `GetEmployeesData` writes three debug lines per page and `UserInfo` one per user, the text built even when debug logging is off. Now: each record is read once; the per-page and per-user debug text is built only when debug logging is on. Gain: small, within run-to-run noise on the fake (21-run medians: get 1,000 users 19.5 → 17.1 ms, download 5,000 records 32.5 → 29.9 ms; section 5). **Deliberate deviation from D3** ("only the inside changes"): `RecordDownloaded`'s `Record` is now the same object as the one in the returned list, as `EmployeesDataGet`'s `Employee` already was, so a handler that edits `e.Record` edits the list. Chronos's three handlers read only the counts (`ChronosApp/Shared/DeviceControlService.cs:215`, `ChronosApp/Controls/DeviceControl_Anviz.cs:746-750`, `Chronos.Web/Screens/DeviceControl/DeviceControlScreen.Anviz.cs:176-180`). | fixed (S4, `f91899c`) |
 
 ## 5. Timings
 
@@ -692,8 +694,9 @@ of the table. Same command as above.
 | Set 200 templates | 24.0 | 20.7 | 3036.6 | 2934.6 |
 | Set 200 users (Unicode) | 2.8 | 2.9 | 384.4 | 383.1 |
 
-**What it shows: no measurable gain (C14).** The differences above sit inside the spread between runs of the same
-build (download 5,000 records: before 30.9-34.3 ms, after 34.0-35.3 ms; set 200 templates: before 24.0-39.9 ms).
+**What it shows: no measurable gain (C14).** The largest difference, RX.12 (`f91899c`: 21-run medians get 1,000 users
+19.5 → 17.1 ms, download 5,000 records 32.5 → 29.9 ms), is small, within run-to-run noise on the fake. The differences
+above sit inside the spread between runs of the same build (download 5,000 records: before 30.9-34.3 ms, after 34.0-35.3 ms; set 200 templates: before 24.0-39.9 ms).
 Over 21 runs of each case, side by side, the download median was 29.8-30.0 ms after against 30.5-34.5 ms before, the
 reverse of the table, so neither direction is real. The "no delay" column is about one loopback round trip (0.1-0.2 ms)
 per page or command plus the fake's own work; the delayed column is Windows timer steps (about 15.6 ms per answer), so
@@ -703,11 +706,11 @@ Each change, kept for the fault its row names (S4 rule: kept if the table improv
 
 | Change | Row | Commit | Gain |
 |---|---|---|---|
-| Socket `NoDelay` | RX.11 | `774aab7` | none measurable (each frame is one write, and the protocol waits for each answer, so Nagle rarely held one) |
+| Socket `NoDelay` | RX.11 | `774aab7` | none measurable on the fake (each frame is one write, and the protocol waits for each answer, so Nagle rarely held one); kept as code hygiene, it removes the Nagle delay; its effect can show only on a real network, timed on the M7 in S6 (C14) |
 | Frame buffer sized from LEN (no 16,000-byte buffer per frame; any LEN up to 65,535 read) | RX.9 | `36fd8c3` | none measurable; the fault is gone (a LEN of 16,000 lost the connection) |
 | Answer timer cancelled when the call or pong write ends | RX.7 | `84be951` | none measurable; the leak is gone (500 commands left 500 live timers) |
-| `Bytes.Split` by `Array.Copy` instead of LINQ | RX.10 | `f6b2573` | none measurable |
-| Each record read once; debug text built only when debug logging is on | RX.12 | `f91899c` | get 1,000 users median 19.5 → 17.1 ms over 21 runs; not visible in the table |
+| `Bytes.Split` by `Array.Copy` instead of LINQ | RX.10 | `f6b2573` | none measurable; kept as code hygiene, it removes LINQ's walk and extra allocations per field |
+| Each record read once; debug text built only when debug logging is on | RX.12 | `f91899c` | small, within run-to-run noise on the fake: 21-run medians get 1,000 users 19.5 → 17.1 ms, download 5,000 records 32.5 → 29.9 ms; not visible in the table |
 
 Two candidates were already done by S3 and were not changed again: the waiting caller resumes off the reader (the
 answer's `TaskCompletionSource` runs continuations asynchronously, RX.2), and the reader is an async loop on a `Task`

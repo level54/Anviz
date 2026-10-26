@@ -64,6 +64,7 @@ namespace Anviz.SDK.Responses
             // and LEN at bytes 7-8.
             var base_offset = ACK < 0x80 ? 8 : 9;
             await ReadAsyncContinuously(stream, head, 6, base_offset - 6, ct, bytesRead);
+            // Big-endian LEN read in place: Bytes.Read(Bytes.Split(...)) would allocate a 2-byte array per frame.
             var LEN = (head[base_offset - 2] << 8) | head[base_offset - 1];
             var data = new byte[base_offset + LEN + 2];
             Array.Copy(head, data, base_offset);

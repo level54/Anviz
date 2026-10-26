@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System;
+using System.Text;
 
 namespace Anviz.SDK.Utils
 {
@@ -54,9 +55,9 @@ namespace Anviz.SDK.Utils
         // RX.10: one copy, no walk from the start. Like Skip/Take, a range past the end gives the bytes that are there.
         public static byte[] Split(byte[] data, int start, int count)
         {
-            start = System.Math.Max(start, 0);
-            var ret = new byte[System.Math.Max(0, System.Math.Min(count, data.Length - start))];
-            if (ret.Length > 0) System.Array.Copy(data, start, ret, 0, ret.Length);
+            start = Math.Max(start, 0);
+            var ret = new byte[Math.Max(0, Math.Min(count, data.Length - start))];
+            if (ret.Length > 0) Array.Copy(data, start, ret, 0, ret.Length);
             return ret;
         }
 

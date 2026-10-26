@@ -82,5 +82,24 @@ public class TimingTests
     }
 }
 
+/// <summary>Counts the process's live timers, so it runs alone (the timing collection runs without parallel classes).</summary>
+[Collection(nameof(TimingTests))]
+public class AnswerTimerTests
+{
+    [Fact]
+    public async Task RX7_AnsweredCommands_LeaveNoLiveTimer()
+    {
+        // RX.7: each command's 10-second answer limit is a timer; it stops when the answer comes, so 500 answered
+        // commands do not leave 500 live timers behind.
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        var before = Timer.ActiveCount;
+
+        for (var i = 0; i < 500; i++) await device.GetDeviceTypeCode();
+
+        Assert.True(Timer.ActiveCount - before < 50, $"{Timer.ActiveCount - before} timers left live by 500 commands.");
+    }
+}
+
 [CollectionDefinition(nameof(TimingTests), DisableParallelization = true)]
 public class TimingTestsCollection;
