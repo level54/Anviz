@@ -1,5 +1,4 @@
-﻿using System.Linq;
-using System.Text;
+﻿using System.Text;
 
 namespace Anviz.SDK.Utils
 {
@@ -52,9 +51,13 @@ namespace Anviz.SDK.Utils
             return ret;
         }
 
+        // RX.10: one copy, no walk from the start. Like Skip/Take, a range past the end gives the bytes that are there.
         public static byte[] Split(byte[] data, int start, int count)
         {
-            return data.Skip(start).Take(count).ToArray();
+            start = System.Math.Max(start, 0);
+            var ret = new byte[System.Math.Max(0, System.Math.Min(count, data.Length - start))];
+            if (ret.Length > 0) System.Array.Copy(data, start, ret, 0, ret.Length);
+            return ret;
         }
 
         public static string GetUnicodeString(byte[] data)
