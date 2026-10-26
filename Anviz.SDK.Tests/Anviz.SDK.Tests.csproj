@@ -12,5 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Anviz.SDK\Anviz.SDK.csproj" />
+    <ProjectReference Include="..\Anviz.SDK.M7Check\Anviz.SDK.M7Check.csproj" />
   </ItemGroup>
 </Project>

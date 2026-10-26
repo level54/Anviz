@@ -45,8 +45,13 @@ public sealed class FakeAnvizDevice : IAsyncDisposable
     {
         answers = new()
         {
-            // 6. Set the date and time: the answer has no data.
-            [SetDateTime] = command => Answer(command, []),
+            // 6. Set the date and time: the 0x38 layout (5.); the answer has no data.
+            [SetDateTime] = command =>
+            {
+                var d = command.Data;
+                Clock = new DateTime(2000 + d[0], d[1], d[2], d[3], d[4], d[5]);
+                return Answer(command, []);
+            },
             [GetRecordInformation] = command => Answer(command, RecordInformation()),
             [DownloadRecords] = DownloadRecordsAnswer,
             [DownloadTemplate] = DownloadTemplateAnswer,
