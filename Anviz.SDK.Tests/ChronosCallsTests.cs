@@ -180,6 +180,29 @@ public class ChronosCallsTests
         Assert.Empty(users); // Today the call empties the caller's list.
     }
 
+    [Theory]
+    [InlineData(40)]
+    [InlineData(30)]
+    public async Task R73_11_UserTheDeviceDidNotStore_IsAnvizException_Unicode_AnsiUnchanged(int recordLength)
+    {
+        await using var fake = await FakeAnvizDevice.StartAsync();
+        using var device = await fake.ConnectAsync();
+        // Answer flag 0x0000: bit 0 = 0, user 1 of the frame not stored.
+        fake.AnswerNext(UploadStaff, _ => new Frame(fake.DeviceId, UploadStaff + 0x80, FakeAnvizDevice.AckSuccess, [0, 0]).ToBytes());
+        var user = new UserInfo(7, "A");
+
+        if (recordLength == 40)
+        {
+            // R73.11: the M7 answers 0x0001 for a new and an updated user (S6), as the document says; a 0 bit is a refusal.
+            var error = await Assert.ThrowsAsync<AnvizException>(() => device.SetEmployeesDataUnicode(user));
+            Assert.Equal(AnvizReturnCode.Fail, error.ReturnCode);
+        }
+        else
+            await device.SetEmployeesDataAnsi(user); // R73.13: the M5 path keeps ignoring the flag (D8; the M7 cannot run it).
+
+        Assert.NotNull(await device.GetDeviceTypeCode()); // the connection stays
+    }
+
     [Fact]
     public async Task DeleteEmployeesData_SendsUserIdAndFF()
     {

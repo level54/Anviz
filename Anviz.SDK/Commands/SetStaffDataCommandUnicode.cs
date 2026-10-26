@@ -1,5 +1,7 @@
 ﻿using Anviz.SDK.Commands;
+using Anviz.SDK.Exceptions;
 using Anviz.SDK.Responses;
+using Anviz.SDK.Utils;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -37,7 +39,11 @@ namespace Anviz.SDK
         {
             while (users.Count > 0)
             {
-                await DeviceStream.SendCommand(new SetStaffDataCommandUnicode(DeviceId, users));
+                var stored = (1UL << Math.Min(users.Count, UserInfo.MAX_RECORDS)) - 1;
+                var response = await DeviceStream.SendCommand(new SetStaffDataCommandUnicode(DeviceId, users));
+                // The answer flag: bit n = 1 when user n + 1 of the frame was stored (the M7 sets it for a new and an updated user).
+                if ((Bytes.Read(response.DATA) & stored) != stored)
+                    throw new AnvizException(AnvizReturnCode.Fail);
             }
         }
     }
