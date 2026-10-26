@@ -11,6 +11,7 @@ namespace Anviz.SDK.Commands
         {
             var payload = new byte[6];
             Bytes.Write(5, employeeID).CopyTo(payload, 0);
+            // M7 deviation (CHR27-1 S6): the document has no face template in 0x44; on the M7, a finger device, this frame returns the FP1 template (338 bytes).
             payload[5] = 1;
             BuildPayload(GET_FACETEMPLATE, payload);
         }

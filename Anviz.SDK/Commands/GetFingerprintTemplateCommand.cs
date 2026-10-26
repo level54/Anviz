@@ -11,6 +11,7 @@ namespace Anviz.SDK.Commands
         {
             var payload = new byte[6];
             Bytes.Write(5, employeeID).CopyTo(payload, 0);
+            // M7 deviation (CHR27-1 S6): the document defines backup codes 1 and 2 only; the M7 answers ACK_NO_USER, not ACK_FAIL, for 3-10 (it takes them as fingers).
             payload[5] = (byte)(finger + 1);
             BuildPayload(GET_FPTEMPLATE, payload);
         }

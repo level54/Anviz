@@ -17,6 +17,7 @@ namespace Anviz.SDK.Utils
         Password = 0x4,
         [Description("Card")]
         RFCard = 0x8,
+        // M7 deviation (CHR27-1 S6): the document defines 0x4C backup-code bits 0-3 only; the M7 takes 0xFF (bits 4-7 set) as delete the whole user.
         [Description("Right Middle")]
         RightMiddle = 0x10,
         [Description("Right Anular")]
